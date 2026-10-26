@@ -4,11 +4,17 @@ on:
   push:
     paths:
       - 'zuxrash-source-part-*.txt'
+      - 'app/**'
+      - '**.kt'
+      - '*.gradle.kts'
       - '.github/workflows/build-apk.yml'
+      - 'gradle.properties'
+      - 'README.md'
+      - '.gitignore'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -17,11 +23,24 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Rebuild source ZIP
+      - name: Prepare Android project files
+        shell: bash
         run: |
-          cat zuxrash-source-part-*.txt | tr -d '\r\n' | base64 --decode > zuxrash-android-assistant-source.zip
-          unzip -tq zuxrash-android-assistant-source.zip
-          unzip -q zuxrash-android-assistant-source.zip -d imported-source
+          if [ -f app/build.gradle.kts ]; then
+            echo "Using Android project already in repository root."
+          else
+            cat zuxrash-source-part-*.txt | tr -d '\r\n' | base64 --decode > /tmp/zuxrash-android-assistant-source.zip
+            unzip -tq /tmp/zuxrash-android-assistant-source.zip
+            mkdir -p imported-source
+            unzip -q /tmp/zuxrash-android-assistant-source.zip -d imported-source
+            source_dir="imported-source/zuxrash-android-assistant"
+            cp -a "$source_dir/app" .
+            cp "$source_dir/build.gradle.kts" .
+            cp "$source_dir/settings.gradle.kts" .
+            cp "$source_dir/gradle.properties" .
+            cp "$source_dir/.gitignore" .
+            cp "$source_dir/README.md" .
+          fi
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -43,11 +62,23 @@ jobs:
           gradle-version: '8.11.1'
 
       - name: Build debug APK
-        run: gradle -p imported-source/zuxrash-android-assistant --no-daemon assembleDebug
+        run: gradle --no-daemon assembleDebug
+
+      - name: Commit Android source files
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md .gitignore app build.gradle.kts settings.gradle.kts gradle.properties
+          if ! git diff --cached --quiet; then
+            git commit -m "Add Android app source files"
+            git push origin HEAD:main
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: zuxrash-ai-debug-apk
-          path: imported-source/zuxrash-android-assistant/app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
