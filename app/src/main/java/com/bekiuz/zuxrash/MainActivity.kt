@@ -7,11 +7,13 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Bundle
+import android.os.Build
 import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -152,6 +154,19 @@ private fun ZuxrashAssistantApp() {
     var isListening by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var speakReplies by remember { mutableStateOf(prefs.getBoolean("speak_replies", true)) }
+    var wakeWordEnabled by remember { mutableStateOf(prefs.getBoolean("wake_word_enabled", false)) }
+
+    fun updateWakeWordService(action: String) {
+        if (!prefs.getBoolean("wake_word_enabled", false)) return
+        try {
+            context.startService(Intent(context, WakeWordService::class.java).setAction(action))
+        } catch (_: Exception) {
+            statusMessage = "Fon tinglash xizmatini boshqarib bo‘lmadi"
+        }
+    }
+
+    fun pauseWakeWordIfEnabled() = updateWakeWordService(WakeWordService.ACTION_PAUSE)
+    fun resumeWakeWordIfEnabled() = updateWakeWordService(WakeWordService.ACTION_RESUME)
     var statusMessage by remember { mutableStateOf("Yordam berishga tayyorman") }
     var ttsReady by remember { mutableStateOf(false) }
     val clientId = remember {
@@ -175,6 +190,16 @@ private fun ZuxrashAssistantApp() {
         }
     }
     DisposableEffect(tts) {
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) { }
+            override fun onDone(utteranceId: String?) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post { resumeWakeWordIfEnabled() }
+            }
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post { resumeWakeWordIfEnabled() }
+            }
+        })
         onDispose { tts.stop(); tts.shutdown() }
     }
 
@@ -188,32 +213,45 @@ private fun ZuxrashAssistantApp() {
     fun sendText(rawText: String) {
         val text = rawText.trim()
         if (text.isBlank() || isLoading) return
+        pauseWakeWordIfEnabled()
         messages.add(ChatMessage(role = "user", text = text))
         input = ""
         val localReply = runLocalCommand(context, text)
         if (localReply != null) {
             messages.add(ChatMessage(role = "assistant", text = localReply))
             statusMessage = "Buyruq bajarildi"
-            if (speakReplies && ttsReady) tts.speak(localReply, TextToSpeech.QUEUE_FLUSH, null, "zuxrash-local")
+            if (speakReplies && ttsReady) {
+                val result = tts.speak(localReply, TextToSpeech.QUEUE_FLUSH, null, "zuxrash-local")
+                if (result != TextToSpeech.SUCCESS) resumeWakeWordIfEnabled()
+            } else {
+                resumeWakeWordIfEnabled()
+            }
             return
         }
         val history = messages.toList().takeLast(12)
         isLoading = true
         statusMessage = "Javob tayyorlanyapti…"
         scope.launch {
+            var ttsWillResumeWakeWord = false
             try {
                 val reply = withContext(Dispatchers.IO) { AiClient.reply(endpoint, history, clientId) }
                 messages.add(ChatMessage(role = "assistant", text = reply))
                 statusMessage = "Ulandi"
                 if (speakReplies && ttsReady) {
-                    tts.speak(reply.take(3500), TextToSpeech.QUEUE_FLUSH, null, "zuxrash-reply-${System.currentTimeMillis()}")
+                    ttsWillResumeWakeWord = tts.speak(
+                        reply.take(3500),
+                        TextToSpeech.QUEUE_FLUSH,
+                        null,
+                        "zuxrash-reply-" + System.currentTimeMillis()
+                    ) == TextToSpeech.SUCCESS
                 }
             } catch (error: Exception) {
-                val message = error.message?.take(220).orEmpty().ifBlank { "Tarmoq yoki AI serverida xatolik." }
+                val message = error.message?.take(320).orEmpty().ifBlank { "Tarmoq yoki AI serverida xatolik." }
                 messages.add(ChatMessage(role = "assistant", text = "Ulanishda muammo: $message\n\nServer manzilini Sozlamalardan tekshir."))
                 statusMessage = "Serverni tekshiring"
             } finally {
                 isLoading = false
+                if (!ttsWillResumeWakeWord) resumeWakeWordIfEnabled()
             }
         }
     }
@@ -233,6 +271,7 @@ private fun ZuxrashAssistantApp() {
             override fun onEndOfSpeech() { isListening = false; statusMessage = "Ovoz qayta ishlanyapti…" }
             override fun onError(error: Int) {
                 isListening = false
+                resumeWakeWordIfEnabled()
                 statusMessage = when (error) {
                     SpeechRecognizer.ERROR_NO_MATCH -> "Gapni anglay olmadim — qayta urinib ko‘r"
                     SpeechRecognizer.ERROR_NETWORK -> "Nutqni tanish uchun internet kerak"
@@ -243,7 +282,10 @@ private fun ZuxrashAssistantApp() {
             override fun onResults(results: Bundle?) {
                 isListening = false
                 val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
-                if (spoken.isNotBlank()) sendText(spoken) else statusMessage = "Ovoz aniqlanmadi"
+                if (spoken.isNotBlank()) sendText(spoken) else {
+                    statusMessage = "Ovoz aniqlanmadi"
+                    resumeWakeWordIfEnabled()
+                }
             }
             override fun onPartialResults(partialResults: Bundle?) { }
             override fun onEvent(eventType: Int, params: Bundle?) { }
@@ -255,6 +297,7 @@ private fun ZuxrashAssistantApp() {
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
             putExtra(RecognizerIntent.EXTRA_PROMPT, "Zuxrash AI tinglayapti…")
         }
+        pauseWakeWordIfEnabled()
         try {
             recognizer.startListening(intent)
             isListening = true
@@ -267,6 +310,62 @@ private fun ZuxrashAssistantApp() {
 
     val requestMicPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startListening() else statusMessage = "Ovozli buyruq uchun mikrofon ruxsati kerak"
+    }
+
+    fun startWakeWordService() {
+        try {
+            val intent = Intent(context, WakeWordService::class.java).setAction(WakeWordService.ACTION_START)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+            else context.startService(intent)
+            prefs.edit().putBoolean("wake_word_enabled", true).apply()
+            wakeWordEnabled = true
+            statusMessage = "Hey Zuxrash fon rejimi yoqildi"
+            Toast.makeText(context, "Fon tinglash yoqildi. Bildirishnomadan to‘xtatishingiz mumkin.", Toast.LENGTH_LONG).show()
+        } catch (error: Exception) {
+            prefs.edit().putBoolean("wake_word_enabled", false).apply()
+            wakeWordEnabled = false
+            statusMessage = "Fon xizmatini ishga tushirib bo‘lmadi"
+            Toast.makeText(context, "Fon xizmati ishga tushmadi: " + (error.message ?: "xatolik"), Toast.LENGTH_LONG).show()
+        }
+    }
+
+    val requestWakeWordPermissions = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val micGranted = grants[Manifest.permission.RECORD_AUDIO] == true ||
+            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val notificationsGranted = Build.VERSION.SDK_INT < 33 ||
+            grants[Manifest.permission.POST_NOTIFICATIONS] == true ||
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (micGranted && notificationsGranted) {
+            startWakeWordService()
+        } else {
+            wakeWordEnabled = false
+            prefs.edit().putBoolean("wake_word_enabled", false).apply()
+            statusMessage = "Fon rejimi uchun mikrofon va bildirishnoma ruxsati kerak"
+            Toast.makeText(context, statusMessage, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun setWakeWordMode(enabled: Boolean) {
+        if (!enabled) {
+            context.stopService(Intent(context, WakeWordService::class.java))
+            prefs.edit().putBoolean("wake_word_enabled", false).apply()
+            wakeWordEnabled = false
+            statusMessage = "Hey Zuxrash fon rejimi o‘chirildi"
+            return
+        }
+        val missing = mutableListOf<String>()
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            missing += Manifest.permission.RECORD_AUDIO
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            missing += Manifest.permission.POST_NOTIFICATIONS
+        }
+        if (missing.isEmpty()) startWakeWordService()
+        else requestWakeWordPermissions.launch(missing.toTypedArray())
     }
 
     LaunchedEffect(messages.size) {
@@ -415,7 +514,25 @@ private fun ZuxrashAssistantApp() {
                             prefs.edit().putBoolean("speak_replies", it).apply()
                         })
                     }
-                    Text("Hozircha ‘Hey Zuxrash’ doimiy fon tinglashi yo‘q: mikrofon faqat tugma bosilganda yoqiladi.", color = TextMuted, fontSize = 11.sp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                            Text("“Hey Zuxrash” fon rejimi", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Ilova yopilganda ham uyg‘otuvchi so‘zni tinglaydi", color = TextMuted, fontSize = 11.sp)
+                        }
+                        Switch(
+                            checked = wakeWordEnabled,
+                            onCheckedChange = { setWakeWordMode(it) }
+                        )
+                    }
+                    Text(
+                        "Yoqilganda mikrofon doimiy faol bo‘ladi va Android nutqni tanish xizmatidan foydalanadi. Doimiy bildirishnoma ko‘rinadi; undagi “To‘xtatish” tugmasi fon tinglashni o‘chiradi.",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp
+                    )
                 }
             },
             confirmButton = {

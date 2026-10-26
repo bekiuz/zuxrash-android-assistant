@@ -59,6 +59,11 @@ object AiClient {
             val json = try {
                 JSONObject(responseText)
             } catch (_: Exception) {
+                if (status == 404) {
+                    throw IOException(
+                        "HTTP 404: $endpoint manzili topilmadi. Cloudflare'da zuxrash-ai Worker deploy qilinganini va /api/chat manzili ishlashini tekshirish kerak."
+                    )
+                }
                 throw IOException("AI serveridan tushunarsiz javob keldi (HTTP $status).")
             }
             if (status !in 200..299 || !json.optBoolean("ok", status in 200..299)) {
