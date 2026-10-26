@@ -317,7 +317,14 @@ class WakeWordService : Service() {
         val localAction = resolveLocalCommand(command)
         if (localAction != null) {
             if (localAction.intent != null && localAction.actionLabel != null) {
+                // Keep a notification action as a reliable fallback. Android may block
+                // an activity launch while another app is in the foreground.
                 updateNotification(localAction.speech, localAction.intent, localAction.actionLabel)
+                try {
+                    startActivity(localAction.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (_: Exception) {
+                    // The persistent notification action remains available.
+                }
             } else {
                 updateNotification(localAction.speech)
             }
@@ -353,6 +360,22 @@ class WakeWordService : Service() {
         val lower = command.lowercase(Locale.ROOT).trim()
         return try {
             when {
+                parseTelegramSearchQuery(lower) != null -> {
+                    val query = parseTelegramSearchQuery(lower).orEmpty()
+                    val searchIntent = Intent(
+                        Intent.ACTION_VIEW,
+                        Uri.parse("tg://search?query=" + Uri.encode(query))
+                    ).setPackage("org.telegram.messenger").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    if (packageManager.resolveActivity(searchIntent, 0) == null) {
+                        LocalAction("Telegram ilovasi topilmadi yoki qidiruv havolasini ochib bo‘lmadi.")
+                    } else {
+                        LocalAction(
+                            "Telegramda “$query” qidiruvini ochyapman. Ochilmasa, bildirishnomadagi qidiruv tugmasini bosing.",
+                            "Telegramda qidirish",
+                            searchIntent
+                        )
+                    }
+                }
                 lower.contains("soat nech") || lower.contains("hozir soat") || lower.contains("vaqtni ayt") -> {
                     val time = SimpleDateFormat("HH:mm", Locale("uz", "UZ")).format(Date())
                     LocalAction("Hozir soat $time.")
@@ -411,14 +434,26 @@ class WakeWordService : Service() {
         }
     }
 
+    private fun parseTelegramSearchQuery(command: String): String? {
+        val prefixes = listOf("telegramdan ", "telegramda ", "telegram ichidan ", "tgdan ")
+        val prefix = prefixes.firstOrNull { command.startsWith(it) } ?: return null
+        var query = command.removePrefix(prefix).trim()
+        val endings = listOf(" qidirib top", " qidirib", " qidir", " top", " ni top", " ni qidir")
+        val ending = endings.firstOrNull { query.endsWith(it) } ?: return null
+        query = query.removeSuffix(ending).trim()
+        // Uzbek direct-object ending: "Iqboljonni top" -> "Iqboljon".
+        if (query.endsWith("ni") && query.length > 3) query = query.dropLast(2).trim()
+        return query.takeIf { it.isNotBlank() && it.length <= 100 }
+    }
+
     private fun appAction(packageName: String, appName: String): LocalAction {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
         return if (launchIntent == null) {
             LocalAction(appName + " ilovasi telefonda topilmadi.")
         } else {
             LocalAction(
-                appName + "ni ochish uchun bildirishnomadagi tugmani bosing.",
-                appName + "ni ochish",
+                "$appName ilovasini ochishga urinyapman. Android ruxsat bermasa, bildirishnomadagi tugmani bosing.",
+                "$appName ni ochish",
                 launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
         }
