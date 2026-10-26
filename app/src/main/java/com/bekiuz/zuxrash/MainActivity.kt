@@ -155,6 +155,8 @@ private fun ZuxrashAssistantApp() {
     var showSettings by remember { mutableStateOf(false) }
     var speakReplies by remember { mutableStateOf(prefs.getBoolean("speak_replies", true)) }
     var wakeWordEnabled by remember { mutableStateOf(prefs.getBoolean("wake_word_enabled", false)) }
+    var statusMessage by remember { mutableStateOf("Yordam berishga tayyorman") }
+    var ttsReady by remember { mutableStateOf(false) }
 
     fun updateWakeWordService(action: String) {
         if (!prefs.getBoolean("wake_word_enabled", false)) return
@@ -167,8 +169,6 @@ private fun ZuxrashAssistantApp() {
 
     fun pauseWakeWordIfEnabled() = updateWakeWordService(WakeWordService.ACTION_PAUSE)
     fun resumeWakeWordIfEnabled() = updateWakeWordService(WakeWordService.ACTION_RESUME)
-    var statusMessage by remember { mutableStateOf("Yordam berishga tayyorman") }
-    var ttsReady by remember { mutableStateOf(false) }
     val clientId = remember {
         prefs.getString("client_id", null) ?: UUID.randomUUID().toString().replace("-", "").also {
             prefs.edit().putString("client_id", it).apply()
