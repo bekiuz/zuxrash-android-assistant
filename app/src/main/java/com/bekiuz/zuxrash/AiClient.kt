@@ -8,7 +8,11 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
+private class ApiEndpointNotFoundException(message: String) : IOException(message)
+
 object AiClient {
+    private const val TEMPORARY_FALLBACK_ENDPOINT = "https://bekiuz-ai.bekiuz282.workers.dev/api/chat"
+
     suspend fun reply(
         baseUrl: String,
         history: List<ChatMessage>,
@@ -41,6 +45,27 @@ object AiClient {
             .put("messages", messagesJson)
             .toString()
 
+        // The dedicated Zuxrash Worker may not be deployed yet. If that exact
+        // endpoint returns 404, try the owner's existing compatible Bekiuz AI API.
+        // Once the Zuxrash Worker is deployed, the primary endpoint is used normally.
+        val endpoints = if (endpoint.contains("zuxrash-ai.bekiuz282.workers.dev")) {
+            listOf(endpoint, TEMPORARY_FALLBACK_ENDPOINT)
+        } else {
+            listOf(endpoint)
+        }
+
+        var lastNotFound: IOException? = null
+        for (target in endpoints) {
+            try {
+                return@withContext sendRequest(target, body, clientId)
+            } catch (error: ApiEndpointNotFoundException) {
+                lastNotFound = error
+            }
+        }
+        throw lastNotFound ?: IOException("AI serveri topilmadi. Sozlamalardagi manzilni tekshiring.")
+    }
+
+    private fun sendRequest(endpoint: String, body: String, clientId: String): String {
         val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 15_000
@@ -60,16 +85,23 @@ object AiClient {
                 JSONObject(responseText)
             } catch (_: Exception) {
                 if (status == 404) {
-                    throw IOException(
-                        "HTTP 404: $endpoint manzili topilmadi. Cloudflare'da zuxrash-ai Worker deploy qilinganini va /api/chat manzili ishlashini tekshirish kerak."
+                    throw ApiEndpointNotFoundException(
+                        "HTTP 404: $endpoint manzili topilmadi. Cloudflare'da Worker deploy qilinganini tekshiring."
                     )
                 }
                 throw IOException("AI serveridan tushunarsiz javob keldi (HTTP $status).")
             }
+
+            if (status == 404) {
+                throw ApiEndpointNotFoundException(
+                    "HTTP 404: $endpoint manzili topilmadi. Cloudflare'da Worker deploy qilinganini tekshiring."
+                )
+            }
             if (status !in 200..299 || !json.optBoolean("ok", status in 200..299)) {
                 throw IOException(json.optString("error").ifBlank { "AI server xatosi: HTTP $status" })
             }
-            json.optString("reply").trim().takeIf { it.isNotEmpty() }
+
+            return json.optString("reply").trim().takeIf { it.isNotEmpty() }
                 ?: throw IOException("AI bo‘sh javob qaytardi. Qayta urinib ko‘ring.")
         } finally {
             connection.disconnect()
