@@ -282,7 +282,7 @@ class WakeWordService : Service() {
         val normalized = transcript.lowercase(Locale.ROOT)
             .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
             .trim()
-        val wakePattern = Regex("\\bhey\\s+zux\\s*rash(?:\\s+ai)?\\b")
+        val wakePattern = Regex("\\b(?:hey\\s+)?zux\\s*rash(?:\\s+ai)?\\b")
         val wakeMatch = wakePattern.find(normalized)
 
         if (wakeMatch != null) {
@@ -314,7 +314,10 @@ class WakeWordService : Service() {
     )
 
     private fun executeVoiceCommand(command: String) {
-        val localAction = resolveLocalCommand(command)
+        val cleanCommand = command.trim()
+            .replace(Regex("^(?:menga|manga|iltimos)\\s+"), "")
+            .trim()
+        val localAction = resolveLocalCommand(cleanCommand)
         if (localAction != null) {
             if (localAction.intent != null && localAction.actionLabel != null) {
                 // Keep a notification action as a reliable fallback. Android may block
@@ -340,7 +343,7 @@ class WakeWordService : Service() {
         updateNotification("AI javobi tayyorlanyapti…")
         scope.launch {
             try {
-                val reply = AiClient.reply(endpoint, listOf(ChatMessage(role = "user", text = command)), clientId)
+                val reply = AiClient.reply(endpoint, listOf(ChatMessage(role = "user", text = cleanCommand)), clientId)
                 updateNotification(reply.take(120).ifBlank { "AI javobi tayyor" })
                 speakAndListen(reply.take(1400))
             } catch (error: Exception) {
