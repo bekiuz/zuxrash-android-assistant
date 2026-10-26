@@ -7,19 +7,20 @@ Qora interfeys, neon binafsha/pushti aksentlar va o‘zbekcha buyruqlar bilan An
 - Chat ko‘rinishi va qurilmada saqlanadigan oxirgi 80 ta xabar.
 - Matnli AI chat: Cloudflare Workers AI API’siga murojaat qiladi.
 - Tugma orqali ovoz bilan kiritish (`uz-UZ`) va Android Text-to-Speech orqali javobni o‘qish.
+- Sozlamadan qo‘lda yoqiladigan “Hey Zuxrash” fon rejimi: doimiy foreground bildirishnoma va “To‘xtatish” tugmasi bilan.
 - Telefon vaqti va batareya darajasini aytish.
 - Wi-Fi/telefon sozlamalari, kamera va brauzer qidiruvini ochish.
 - Sozlamalar oynasida API endpointini o‘zgartirish.
 
 ## Ovoz va maxfiylik
 
-Ilova mikrofonni fon rejimida doimiy tinglamaydi. Mikrofon faqat foydalanuvchi mikrofon tugmasini bosganda ishlatiladi. “Hey Zuxrash” hozircha faqat ilovaning ochiq holatida yozilgan matnda aniqlanadi; bu doimiy wake-word xizmati emas.
+“Hey Zuxrash” fon rejimi foydalanuvchi Sozlamalardan yoqqandagina mikrofonni faol tutadi. Android’ning doimiy foreground bildirishnomasida tinglash holati ko‘rsatiladi va “To‘xtatish” tugmasi bor. Bu hozircha Android SpeechRecognizer xizmatini qayta ishga tushirib turadigan prototip; oflayn wake-word modeli emas, shuning uchun qurilmadagi nutqni tanish xizmati va internet talab qilinishi mumkin. Fon tinglashni ishlatmasangiz, sozlamadan o‘chirib qo‘ying.
 
 Chat xabarlari AI javobi uchun sozlangan Cloudflare Worker endpointiga yuboriladi. Mahalliy buyruqlar (masalan, vaqt/batareya) telefonda bajariladi. Mahalliy chat tarixi ushbu qurilmadagi ilova xotirasida saqlanadi. Maxfiy parol yoki API kalitlarini chatga yozmang.
 
 ## AI backend manzili
 
-`app/build.gradle.kts` ichidagi `API_BASE_URL` hozir `https://zuxrash-ai.bekiuz282.workers.dev` qilib sozlangan. Agar sening Cloudflare Worker manziling boshqacha bo‘lsa, shu qiymatni almashtir.
+`app/build.gradle.kts` ichidagi `API_BASE_URL` hozir `https://zuxrash-ai.bekiuz282.workers.dev` qilib sozlangan. Agar Cloudflare panelidagi to‘liq Worker URL boshqacha bo‘lsa, shu qiymatni haqiqiy manzilga moslang. Ilova `/api/chat` yo‘lini o‘zi qo‘shadi — sozlamaga `/api/chat` yoki `/api/health` bilan tugaydigan URL kiritmang. Zuxrash Worker HTTP 404 qaytarsa, ilova vaqtincha `bekiuz-ai.bekiuz282.workers.dev` API’sini sinab ko‘radi.
 
 Worker quyidagi API shartini qabul qilishi kerak:
 
@@ -42,4 +43,4 @@ Worker quyidagi API shartini qabul qilishi kerak:
 
 ## Hali qilinmagan ishlar
 
-Bu hozircha birinchi prototip: mustaqil fon rejimidagi wake-word, qo‘ng‘iroq/SMS kabi keng ruxsatli buyruqlar, doimiy bulut xotirasi va chiqarishga tayyor signed release APK hali tayyor emas. Signed APK uchun alohida release signing sozlamalari kerak.
+Bu hozircha prototip: fon rejimidagi wake-word Android nutqni tanish xizmatiga bog‘liq va ishlab chiqarish darajasidagi oflayn hotword emas; qo‘ng‘iroq/SMS kabi keng ruxsatli buyruqlar, doimiy bulut xotirasi va chiqarishga tayyor signed release APK hali tayyor emas. Signed APK uchun alohida release signing sozlamalari kerak.
