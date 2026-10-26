@@ -3,10 +3,7 @@ name: Build Zuxrash AI APK
 on:
   push:
     paths:
-      - 'zuxrash-android-assistant-source.zip'
-      - 'app/**'
-      - '**.kt'
-      - '*.gradle.kts'
+      - 'zuxrash-source-part-*.txt'
       - '.github/workflows/build-apk.yml'
   workflow_dispatch:
 
@@ -20,11 +17,11 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Check source archive
-        run: test -f zuxrash-android-assistant-source.zip
-
-      - name: Extract Android Studio project
-        run: unzip -q zuxrash-android-assistant-source.zip -d imported-source
+      - name: Rebuild source ZIP
+        run: |
+          cat zuxrash-source-part-*.txt | tr -d '\r\n' | base64 --decode > zuxrash-android-assistant-source.zip
+          unzip -tq zuxrash-android-assistant-source.zip
+          unzip -q zuxrash-android-assistant-source.zip -d imported-source
 
       - name: Set up Java
         uses: actions/setup-java@v4
