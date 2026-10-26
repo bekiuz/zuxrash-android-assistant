@@ -608,42 +608,135 @@ private fun saveHistory(prefs: android.content.SharedPreferences, messages: List
 private fun runLocalCommand(context: Context, text: String): String? {
     val query = text.trim()
     val lower = query.lowercase(Locale.ROOT)
+
     return try {
         when {
             lower == "zuxrash" || lower == "hey zuxrash" || lower == "hey zuxrash ai" ->
                 "Ha, eshitaman! Nima yordam kerak?"
+
             lower.contains("soat nech") || lower.contains("hozir soat") || lower.contains("vaqtni ayt") -> {
                 val time = SimpleDateFormat("HH:mm", Locale("uz", "UZ")).format(Date())
                 "Hozir soat $time."
             }
-            lower.contains("batareya necha") || lower.contains("batareya daraja") || lower == "batareya" || lower == "zaryad qancha" -> {
+
+            lower.contains("bugun sana") || lower == "sana nechchi" || lower == "bugungi sana" -> {
+                val date = SimpleDateFormat("d MMMM yyyy", Locale("uz", "UZ")).format(Date())
+                "Bugungi sana: $date."
+            }
+
+            lower.contains("batareya necha") || lower.contains("batareya daraja") ||
+                lower == "batareya" || lower == "zaryad qancha" -> {
                 val manager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
                 val level = manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                if (level in 0..100) "Telefon batareyasi: $level%." else "Batareya darajasini o‘qib bo‘lmadi."
+                if (level in 0..100) "Telefon batareyasi: $level%."
+                else "Batareya darajasini o‘qib bo‘lmadi."
             }
-            lower == "telefon sozlamalari" || lower == "sozlamalarni och" || lower == "sozlamalarni ochib ber" -> {
+
+            lower == "telegram" || lower == "telegramni och" || lower == "telegram och" ||
+                lower == "telegramga kir" || lower == "tg och" ->
+                openInstalledApp(context, listOf("org.telegram.messenger"), "Telegram")
+
+            lower == "youtube" || lower == "youtubeni och" || lower == "youtube och" ||
+                lower == "youtube ni och" || lower == "youtube ochib ber" ->
+                openInstalledApp(context, listOf("com.google.android.youtube"), "YouTube")
+
+            lower == "instagram" || lower == "instagramni och" || lower == "instagram och" ->
+                openInstalledApp(context, listOf("com.instagram.android"), "Instagram")
+
+            lower == "chrome" || lower == "chromeni och" || lower == "brauzerni och" ||
+                lower == "internetni och" ->
+                openInstalledApp(
+                    context,
+                    listOf("com.android.chrome", "com.sec.android.app.sbrowser", "com.microsoft.emmx", "org.mozilla.firefox"),
+                    "Brauzer"
+                )
+
+            lower == "play market" || lower == "play marketni och" || lower == "play store" ||
+                lower == "play store ni och" ->
+                openInstalledApp(context, listOf("com.android.vending"), "Play Market")
+
+            lower == "telefon sozlamalari" || lower == "sozlamalarni och" ||
+                lower == "sozlamalarni ochib ber" || lower == "sozlamalar" -> {
                 context.startActivity(Intent(Settings.ACTION_SETTINGS))
                 "Telefon sozlamalarini ochdim."
             }
-            lower == "wifi sozlamalari" || lower == "wi-fi sozlamalari" || lower == "wifi ni sozla" -> {
+
+            lower == "wifi sozlamalari" || lower == "wi-fi sozlamalari" ||
+                lower == "wifi ni sozla" || lower == "wifi ni och" -> {
                 context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
                 "Wi-Fi sozlamalarini ochdim."
             }
-            lower == "kamerani och" || lower == "kamera och" -> {
+
+            lower == "bluetooth sozlamalari" || lower == "bluetoothni och" ||
+                lower == "bluetooth sozlamasini och" -> {
+                context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                "Bluetooth sozlamalarini ochdim."
+            }
+
+            lower == "joylashuv sozlamalari" || lower == "gps sozlamalari" ||
+                lower == "joylashuvni sozla" -> {
+                context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                "Joylashuv sozlamalarini ochdim."
+            }
+
+            lower == "ekran sozlamalari" || lower == "displey sozlamalari" ||
+                lower == "ekran sozlamasini och" -> {
+                context.startActivity(Intent(Settings.ACTION_DISPLAY_SETTINGS))
+                "Ekran sozlamalarini ochdim."
+            }
+
+            lower == "ovoz sozlamalari" || lower == "tovush sozlamalari" ||
+                lower == "ovozni sozla" -> {
+                context.startActivity(Intent(Settings.ACTION_SOUND_SETTINGS))
+                "Ovoz sozlamalarini ochdim."
+            }
+
+            lower == "ilovalar sozlamalari" || lower == "ilovalarni boshqarish" ||
+                lower == "o‘rnatilgan ilovalar" || lower == "ornatilgan ilovalar" -> {
+                context.startActivity(Intent(Settings.ACTION_APPLICATION_SETTINGS))
+                "Ilovalar sozlamalarini ochdim."
+            }
+
+            lower == "batareya sozlamalari" || lower == "batareyani tejash" -> {
+                context.startActivity(Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS))
+                "Batareyani tejash sozlamalarini ochdim."
+            }
+
+            lower == "kamerani och" || lower == "kamera och" || lower == "kamerani ishga tushir" -> {
                 context.startActivity(Intent("android.media.action.IMAGE_CAPTURE"))
                 "Kamerani ochdim."
             }
-            lower.startsWith("brauzerda qidir ") || lower.startsWith("internetdan qidir ") -> {
-                val search = query.substringAfter(' ').substringAfter(' ').trim()
+
+            lower.startsWith("brauzerda qidir ") ||
+                lower.startsWith("internetdan qidir ") ||
+                lower.startsWith("google da qidir ") ||
+                lower.startsWith("qidir ") -> {
+                val search = when {
+                    lower.startsWith("brauzerda qidir ") -> query.substringAfter("brauzerda qidir ", "").trim()
+                    lower.startsWith("internetdan qidir ") -> query.substringAfter("internetdan qidir ", "").trim()
+                    lower.startsWith("google da qidir ") -> query.substringAfter("google da qidir ", "").trim()
+                    else -> query.substringAfter("qidir ", "").trim()
+                }
                 if (search.isBlank()) return null
                 val encoded = java.net.URLEncoder.encode(search, "UTF-8")
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=$encoded")))
                 "Brauzerda qidiruvni ochdim: $search"
             }
+
             else -> null
         }
     } catch (_: Exception) {
-        "Bu buyruqni telefonda ochib bo‘lmadi. Sozlamalardan yoki ilovalar ro‘yxatidan tekshirib ko‘r."
+        "Bu buyruqni telefonda ochib bo‘lmadi. Ilova o‘rnatilganini yoki sozlamalar mavjudligini tekshirib ko‘r."
     }
 }
 
+private fun openInstalledApp(context: Context, packageNames: List<String>, appName: String): String {
+    for (packageName in packageNames) {
+        val launchIntent = context.packageManager.getLaunchIntentForPackage(packageName)
+        if (launchIntent != null) {
+            context.startActivity(launchIntent)
+            return "$appName ilovasini ochdim."
+        }
+    }
+    return "$appName ilovasi telefonda topilmadi yoki o‘rnatilmagan."
+}
