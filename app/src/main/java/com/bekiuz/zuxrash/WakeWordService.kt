@@ -360,7 +360,9 @@ class WakeWordService : Service() {
     }
 
     private fun resolveLocalCommand(command: String): LocalAction? {
-        val lower = command.lowercase(Locale.ROOT).trim()
+        val lower = command.lowercase(Locale.ROOT)
+            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+            .trim()
         return try {
             when {
                 parseTelegramSearchQuery(lower) != null -> {
@@ -393,15 +395,15 @@ class WakeWordService : Service() {
                     val level = manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
                     LocalAction(if (level in 0..100) "Telefon batareyasi $level foiz." else "Batareya darajasini o‘qib bo‘lmadi.")
                 }
-                lower.contains("telegram") && (lower.contains("och") || lower.contains("ishga tushir")) ->
+                isAppOpenCommand(lower, listOf("telegram", "tg")) ->
                     appAction("org.telegram.messenger", "Telegram")
-                lower.contains("youtube") && lower.contains("och") ->
+                isAppOpenCommand(lower, listOf("youtube", "yutub", "youtub")) ->
                     appAction("com.google.android.youtube", "YouTube")
-                lower.contains("instagram") && lower.contains("och") ->
+                isAppOpenCommand(lower, listOf("instagram", "insta")) ->
                     appAction("com.instagram.android", "Instagram")
-                lower.contains("play market") && lower.contains("och") ->
+                isAppOpenCommand(lower, listOf("play market", "playstore", "play store")) ->
                     appAction("com.android.vending", "Play Market")
-                lower.contains("chrome") && lower.contains("och") ->
+                isAppOpenCommand(lower, listOf("chrome", "brauzer", "browser")) ->
                     appAction("com.android.chrome", "Chrome")
                 lower.contains("wifi") && (lower.contains("sozlama") || lower.contains("och")) ->
                     settingsAction(Settings.ACTION_WIFI_SETTINGS, "Wi-Fi sozlamalari")
@@ -561,4 +563,22 @@ class WakeWordService : Service() {
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
+}
+
+
+private fun isAppOpenCommand(command: String, aliases: List<String>): Boolean {
+    val words = command.split(Regex("\\s+")).filter { it.isNotBlank() }
+    val appMentioned = aliases.any { alias ->
+        if (alias.contains(" ")) {
+            command.contains(alias)
+        } else {
+            words.any { word -> word == alias || word.startsWith(alias) }
+        }
+    }
+    val wantsToOpen = words.any { it.startsWith("och") } ||
+        command.contains("ishga tushir") ||
+        command.contains("ishga tushur") ||
+        command.contains("ilovaga kir") ||
+        words.any { it == "kir" || it == "kiring" || it == "kirib" }
+    return appMentioned && wantsToOpen
 }
