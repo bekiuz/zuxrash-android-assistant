@@ -432,11 +432,27 @@ class WakeWordService : Service() {
                         LocalAction("Qidiruvni ochish uchun bildirishnomadagi tugmani bosing.", "Qidirish", searchIntent)
                     }
                 }
-                else -> null
+                else -> findInstalledAppAction(lower)
             }
         } catch (_: Exception) {
             LocalAction("Bu buyruqni bajara olmadim. Sozlamalarni tekshirib ko‘ring.")
         }
+    }
+
+    private fun findInstalledAppAction(command: String): LocalAction? {
+        val wordsToRemove = listOf("hey zuxrash", "zuxrash ai", "zuxrash", "ilovasini ochib ber", "ilovani ochib ber", "ochib ber", "ilovasini och", "ilovani och", "ni och", "oching", "och", "открой приложение", "открой", "запусти", "open", "launch", "start", "menga", "manga", "iltimos")
+        var requested = command.lowercase(Locale.ROOT).replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+        for (word in wordsToRemove.sortedByDescending { it.length }) requested = requested.replace(word, " ").trim()
+        requested = requested.replace(Regex("\\s+"), " ").trim()
+        if (requested.length < 2) return null
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val match = packageManager.queryIntentActivities(launcher, 0).firstOrNull { info ->
+            val label = info.loadLabel(packageManager).toString().lowercase(Locale.ROOT).replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+            label == requested || label.startsWith(requested) || requested.startsWith(label)
+        } ?: return null
+        val launch = packageManager.getLaunchIntentForPackage(match.activityInfo.packageName) ?: return null
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return LocalAction("${match.loadLabel(packageManager)} ilovasini ochyapman.", "${match.loadLabel(packageManager)} ni ochish", launch)
     }
 
     private fun parseTelegramSearchQuery(command: String): String? {
