@@ -472,9 +472,10 @@ private fun ZuxrashAssistantApp() {
                 IconButton(
                     onClick = {
                         if (isListening) {
-                            speechRecognizer?.cancel()
+                            inAppVoskEngineRef.get()?.stop()
                             isListening = false
                             statusMessage = "Ovoz tinglash to‘xtatildi"
+                            resumeWakeWordIfEnabled()
                         } else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                             startListening()
                         } else {
