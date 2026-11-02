@@ -329,29 +329,8 @@ private fun ZuxrashAssistantApp() {
             wakeWordEnabled = true
             statusMessage = "Hey Zuxrash fon rejimi yoqildi"
 
-            // Ask the user to exempt this explicitly enabled microphone assistant
-            // from Doze battery restrictions so the OEM is less likely to stop it.
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val powerManager = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-                if (!powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
-                    try {
-                        context.startActivity(
-                            Intent(
-                                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                                Uri.parse("package:" + context.packageName)
-                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
-                    } catch (_: Exception) {
-                        try {
-                            context.startActivity(
-                                Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            )
-                        } catch (_: Exception) { }
-                    }
-                }
-            }
-            Toast.makeText(context, "Fon tinglash yoqildi. Doimiy ishlashi uchun batareya cheklovini ham tasdiqlang.", Toast.LENGTH_LONG).show()
+            statusMessage = "Hey Zuxrash fon rejimi yoqildi"
+            Toast.makeText(context, "Fon tinglash yoqildi.", Toast.LENGTH_LONG).show()
         } catch (error: Exception) {
             prefs.edit().putBoolean("wake_word_enabled", false).apply()
             wakeWordEnabled = false
