@@ -258,8 +258,16 @@ class WakeWordService : Service() {
         }
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "uz-UZ")
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "uz-UZ")
+            val deviceLanguage = if (Locale.getDefault().language == "ru") "ru-RU" else "uz-UZ"
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, deviceLanguage)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, deviceLanguage)
+            if (Build.VERSION.SDK_INT >= 34) {
+                putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH, RecognizerIntent.LANGUAGE_SWITCH_BALANCED)
+                putStringArrayListExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES,
+                    arrayListOf("uz-UZ", "ru-RU")
+                )
+            }
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
         }
@@ -432,7 +440,9 @@ class WakeWordService : Service() {
                         LocalAction("Qidiruvni ochish uchun bildirishnomadagi tugmani bosing.", "Qidirish", searchIntent)
                     }
                 }
-                else -> findInstalledAppAction(lower)
+                else -> DeviceVoiceActions.resolve(this, lower)?.let { action ->
+                    LocalAction(action.message, action.actionLabel, action.intent)
+                } ?: findInstalledAppAction(lower)
             }
         } catch (_: Exception) {
             LocalAction("Bu buyruqni bajara olmadim. Sozlamalarni tekshirib ko‘ring.")
@@ -440,19 +450,12 @@ class WakeWordService : Service() {
     }
 
     private fun findInstalledAppAction(command: String): LocalAction? {
-        val wordsToRemove = listOf("hey zuxrash", "zuxrash ai", "zuxrash", "ilovasini ochib ber", "ilovani ochib ber", "ochib ber", "ilovasini och", "ilovani och", "ni och", "oching", "och", "открой приложение", "открой", "запусти", "open", "launch", "start", "menga", "manga", "iltimos")
-        var requested = command.lowercase(Locale.ROOT).replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
-        for (word in wordsToRemove.sortedByDescending { it.length }) requested = requested.replace(word, " ").trim()
-        requested = requested.replace(Regex("\\s+"), " ").trim()
-        if (requested.length < 2) return null
-        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val match = packageManager.queryIntentActivities(launcher, 0).firstOrNull { info ->
-            val label = info.loadLabel(packageManager).toString().lowercase(Locale.ROOT).replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
-            label == requested || label.startsWith(requested) || requested.startsWith(label)
-        } ?: return null
-        val launch = packageManager.getLaunchIntentForPackage(match.activityInfo.packageName) ?: return null
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        return LocalAction("${match.loadLabel(packageManager)} ilovasini ochyapman.", "${match.loadLabel(packageManager)} ni ochish", launch)
+        val match = InstalledAppMatcher.find(this, command) ?: return null
+        return LocalAction(
+            match.label + " ilovasini ochyapman.",
+            match.label + " ni ochish",
+            match.intent
+        )
     }
 
     private fun parseTelegramSearchQuery(command: String): String? {
