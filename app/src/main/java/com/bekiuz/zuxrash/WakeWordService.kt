@@ -651,7 +651,7 @@ class WakeWordService : Service() {
                     appAction("org.telegram.messenger", "Telegram")
                 isAppOpenCommand(lower, listOf("youtube", "yutub", "youtub", "ютуб")) ->
                     appAction("com.google.android.youtube", "YouTube")
-                isAppOpenCommand(lower, listOf("instagram", "insta", "инстаграм", "инста")) ->
+                isAppOpenCommand(lower, listOf("instagram", "insta", "insta gram", "инстаграм", "инстаграмни", "инста", "инста грам", "инсту")) ->
                     appAction("com.instagram.android", "Instagram")
                 isAppOpenCommand(lower, listOf("play market", "playstore", "play store", "плей маркет")) ->
                     appAction("com.android.vending", "Play Market")
@@ -831,25 +831,29 @@ class WakeWordService : Service() {
 
 private fun isAppOpenCommand(command: String, aliases: List<String>): Boolean {
     val normalized = command.lowercase(Locale.ROOT)
+        .replace(Regex("['ʻʼ’‘´]"), "")
         .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
         .trim()
     val words = normalized.split(Regex("\\s+")).filter { it.isNotBlank() }
 
-    // Uzbek and common Russian/English ways of asking to launch an app.
     val appMentioned = aliases.any { rawAlias ->
         val alias = rawAlias.lowercase(Locale.ROOT)
         if (alias.contains(" ")) normalized.contains(alias)
-        else words.any { word -> word == alias || word.startsWith(alias) }
+        else words.any { word ->
+            word == alias || word.startsWith(alias) ||
+                (alias == "insta" && word in setOf("instu", "инсту"))
+        }
     }
+
     val wantsToOpen = words.any { word ->
-        word.startsWith("och") || word.startsWith("откр") ||
-            word.startsWith("запус") || word == "open" || word == "start" ||
-            word == "kir" || word == "kiring" || word == "kirib" ||
-            word == "включи"
-    } || normalized.contains("ishga tushir") ||
-        normalized.contains("ishga tushur") ||
-        normalized.contains("ilovaga kir") ||
-        normalized.contains("приложение")
+        word.startsWith("och") || word.startsWith("оч") ||
+            word.startsWith("откр") || word.startsWith("запус") ||
+            word.startsWith("включ") || word == "open" || word == "launch" ||
+            word == "start" || word in setOf("kir", "kiring", "kirib")
+    } || listOf(
+        "ishga tushir", "ishga tushur", "ilovaga kir", "приложение",
+        "ilovani ishga tushir", "ochib ber", "очиб бер", "очинг"
+    ).any { normalized.contains(it) }
 
     return appMentioned && wantsToOpen
 }
