@@ -150,6 +150,10 @@ class WakeWordService : Service() {
                 paused = true
                 handler.removeCallbacks(listenRunnable)
                 stopOfflineRecognition()
+                // Release the loaded acoustic model while the chat screen uses its own
+                // recognizer, avoiding two copies of the model in memory.
+                try { offlineEngine?.close() } catch (_: Exception) { }
+                offlineEngine = null
                 updateNotification("Ilova ishlayapti · fon tinglash vaqtincha to‘xtadi")
             }
             ACTION_RESUME -> {
@@ -249,14 +253,14 @@ class WakeWordService : Service() {
                 }
                 handler.post {
                     modelLoading = false
-                    if (!serviceActive) {
+                    if (!serviceActive || paused) {
                         engine.close()
                         return@post
                     }
                     offlineEngine?.close()
                     offlineEngine = engine
                     updateNotification("Vosk o‘zbekcha oflayn tizimi tayyor · “Hey Zuxrash” deb ayting")
-                    if (!paused) startRecognition()
+                    startRecognition()
                 }
             } catch (error: Exception) {
                 try { engine.close() } catch (_: Exception) { }
