@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.os.ParcelFileDescriptor
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
@@ -70,6 +71,8 @@ class WakeWordService : Service() {
     private var dualLanguageSupported = false
     private var languageSupportChecked = false
     private var languageFallbackUsed = false
+    private var filteredCapture: NoiseFilteredAudioCapture? = null
+    private var filteredAudioDisabled = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
 
     private val listenRunnable = Runnable { startRecognition() }
 
@@ -124,6 +127,7 @@ class WakeWordService : Service() {
             paused = false
             prefs.edit().putBoolean("wake_word_enabled", false).apply()
             handler.removeCallbacks(listenRunnable)
+            stopFilteredCapture()
             try { recognizer?.cancel() } catch (_: Exception) { }
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
@@ -161,6 +165,7 @@ class WakeWordService : Service() {
             ACTION_PAUSE -> {
                 paused = true
                 handler.removeCallbacks(listenRunnable)
+                stopFilteredCapture()
                 try { recognizer?.cancel() } catch (_: Exception) { }
                 recognizing = false
                 updateNotification("Ilova ishlayapti · fon tinglash vaqtincha to‘xtadi")
@@ -191,6 +196,7 @@ class WakeWordService : Service() {
     override fun onDestroy() {
         serviceActive = false
         handler.removeCallbacksAndMessages(null)
+        stopFilteredCapture()
         try { recognizer?.cancel(); recognizer?.destroy() } catch (_: Exception) { }
         recognizer = null
         try { tts?.stop(); tts?.shutdown() } catch (_: Exception) { }
@@ -209,6 +215,7 @@ class WakeWordService : Service() {
 
         override fun onBeginningOfSpeech() {
             recognizing = true
+            updateNotification("Ovoz eshitildi · gapiring")
         }
 
         override fun onRmsChanged(rmsdB: Float) { }
@@ -221,7 +228,26 @@ class WakeWordService : Service() {
 
         override fun onError(error: Int) {
             recognizing = false
-            if (!serviceActive || paused) return
+            if (!serviceActive || paused) {
+                stopFilteredCapture()
+                return
+            }
+
+            val usedFilteredInput = filteredCapture != null
+            stopFilteredCapture()
+            if (
+                usedFilteredInput &&
+                !filteredAudioDisabled &&
+                (error == SpeechRecognizer.ERROR_AUDIO ||
+                    error == SpeechRecognizer.ERROR_CLIENT ||
+                    error == SpeechRecognizer.ERROR_SERVER)
+            ) {
+                filteredAudioDisabled = true
+                recreateRecognizer()
+                updateNotification("Telefonning nutq xizmati filtrlangan audio qabul qilmadi · oddiy mikrofon rejimiga o‘tdim")
+                scheduleRecognition(1200)
+                return
+            }
 
             if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
                 prefs.edit().putBoolean("wake_word_enabled", false).apply()
@@ -280,19 +306,49 @@ class WakeWordService : Service() {
 
         override fun onResults(results: Bundle?) {
             recognizing = false
+            stopFilteredCapture()
             if (!serviceActive || paused) return
-            val transcript = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull().orEmpty()
-            if (transcript.isBlank()) {
+            val transcripts = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.filter { it.isNotBlank() }.orEmpty()
+            val scores = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
+            if (transcripts.isEmpty()) {
                 updateNotification("Ovoz aniqlanmadi · yana tinglayapman")
                 scheduleRecognition(500)
                 return
             }
-            updateNotification("Ovoz eshitildi · buyruqni tekshiryapman")
+
+            val wakeIndex = transcripts.indexOfFirst { containsWakePhrase(it) }
+            val bestIndex = if (wakeIndex >= 0) wakeIndex else {
+                transcripts.indices.maxByOrNull { index ->
+                    scores?.getOrNull(index)?.takeIf { it >= 0f } ?: 0.5f
+                } ?: 0
+            }
+            val transcript = transcripts[bestIndex]
+            val confidence = scores?.getOrNull(bestIndex) ?: -1f
+
+            if (confidence in 0f..0.12f) {
+                updateNotification("Shovqin ko‘p yoki ovoz noaniq · telefonga yaqinroq gapiring")
+                scheduleRecognition(700)
+                return
+            }
+
+            updateNotification("Eshitdim: " + transcript.take(90))
             handleTranscript(transcript)
         }
 
-        override fun onPartialResults(partialResults: Bundle?) { }
+        override fun onPartialResults(partialResults: Bundle?) {
+            val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull().orEmpty()
+            if (partial.isNotBlank()) updateNotification("Eshitilyapti: " + partial.take(90))
+        }
+
+        override fun onLanguageDetection(results: Bundle?) {
+            val language = results?.getString(SpeechRecognizer.DETECTED_LANGUAGE).orEmpty()
+            when {
+                language.startsWith("ru", ignoreCase = true) -> speechLanguage = "ru-RU"
+                language.startsWith("uz", ignoreCase = true) -> speechLanguage = "uz-UZ"
+            }
+        }
         override fun onEvent(eventType: Int, params: Bundle?) { }
     }
 
@@ -311,23 +367,76 @@ class WakeWordService : Service() {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, speechLanguage)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, speechLanguage)
-            if (Build.VERSION.SDK_INT >= 34 && dualLanguageSupported) {
-                putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH, RecognizerIntent.LANGUAGE_SWITCH_BALANCED)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+            if (Build.VERSION.SDK_INT >= 33) {
+                putExtra(RecognizerIntent.EXTRA_ENABLE_BIASING_DEVICE_CONTEXT, true)
                 putStringArrayListExtra(
-                    RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES,
-                    arrayListOf("uz-UZ", "ru-RU")
+                    RecognizerIntent.EXTRA_BIASING_STRINGS,
+                    arrayListOf(
+                        "Zuxrash", "Hey Zuxrash", "YouTube", "Telegram", "Instagram",
+                        "Chrome", "Play Market", "och", "ochib ber", "ilovasini och",
+                        "открой", "запусти", "открыть приложение"
+                    )
                 )
             }
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            if (Build.VERSION.SDK_INT >= 34) {
+                putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION, true)
+                putStringArrayListExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES,
+                    arrayListOf("uz-UZ", "ru-RU")
+                )
+                if (dualLanguageSupported) {
+                    putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH, RecognizerIntent.LANGUAGE_SWITCH_BALANCED)
+                    putStringArrayListExtra(
+                        RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES,
+                        arrayListOf("uz-UZ", "ru-RU")
+                    )
+                }
+            }
+        }
+
+        var capture = if (!filteredAudioDisabled) NoiseFilteredAudioCapture.create() else null
+        if (capture != null) {
+            try {
+                capture.start()
+                filteredCapture = capture
+                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, capture.readDescriptor)
+                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, NoiseFilteredAudioCapture.CHANNEL_COUNT)
+                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, android.media.AudioFormat.ENCODING_PCM_16BIT)
+                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, NoiseFilteredAudioCapture.SAMPLE_RATE)
+                updateNotification("Mikrofon filtri faol · " + capture.filterStatus)
+            } catch (_: Exception) {
+                capture.stop()
+                capture = null
+                filteredCapture = null
+                updateNotification("Ovoz filtri ishga tushmadi · odatiy mikrofon rejimi")
+            }
         }
         try {
             recognizing = true
             engine.startListening(intent)
         } catch (_: Exception) {
             recognizing = false
+            stopFilteredCapture()
             scheduleRecognition(1500)
         }
+    }
+
+    private fun containsWakePhrase(value: String): Boolean {
+        val normalized = value.lowercase(Locale.ROOT)
+            .replace(Regex("['ʻʼ’‘´]"), "")
+            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+            .trim()
+        return Regex("(?:hey\\s+)?(?:zux\\s*rash|zu[hx]\\s*rash|зухраш|зукраш)(?:\\s+ai)?")
+            .containsMatchIn(normalized)
+    }
+
+    private fun stopFilteredCapture() {
+        val capture = filteredCapture
+        filteredCapture = null
+        try { capture?.stop() } catch (_: Exception) { }
     }
 
     private fun checkRecognitionSupport() {
@@ -412,7 +521,7 @@ class WakeWordService : Service() {
             .replace(Regex("['ʻʼ’‘´]"), "")
             .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
             .trim()
-        val wakePattern = Regex("\\b(?:hey\\s+)?zux\\s*rash(?:\\s+ai)?\\b")
+        val wakePattern = Regex("(?:hey\\s+)?(?:zux\\s*rash|zu[hx]\\s*rash|зухраш|зукраш)(?:\\s+ai)?")
         val wakeMatch = wakePattern.find(normalized)
 
         if (wakeMatch != null) {
