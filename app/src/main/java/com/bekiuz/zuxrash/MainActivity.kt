@@ -341,7 +341,7 @@ private fun ZuxrashAssistantApp() {
                     ?.firstOrNull().orEmpty()
                 if (partial.isNotBlank()) statusMessage = "Eshitilyapti: " + partial.take(65)
             }
-            override fun onLanguageDetection(results: Bundle?) {
+            override fun onLanguageDetection(results: Bundle) {
                 val language = results?.getString(SpeechRecognizer.DETECTED_LANGUAGE).orEmpty()
                 if (language.startsWith("ru", true)) statusMessage = "Ruscha nutq aniqlandi"
                 else if (language.startsWith("uz", true)) statusMessage = "O‘zbekcha nutq aniqlandi"
