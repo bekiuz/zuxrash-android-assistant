@@ -24,9 +24,10 @@ internal object DeviceVoiceActions {
         val isReminder = listOf("eslatma", "eslatib qoy", "напомни", "напоминание").any { command.contains(it) }
         if (isAlarm || isReminder) return createAlarmAction(command, isReminder)
 
-        val isCall = listOf("qongiroq", "telefon qil", "qongiroq qil", "звони", "позвони", "call ").any { command.contains(it) }
+        val isCall = listOf("qongiroq", "qo ng iroq", "telefon qil", "звони", "позвони", "call ").any { command.contains(it) }
         val isMessage = listOf("xabar yoz", "xabar yubor", "sms", "сообщение", "напиши ").any { command.contains(it) }
-        val number = Regex("""\+?\d[\d\s()\-]{5,}\d""").find(rawCommand)?.value?.replace(Regex("[^0-9+]"), "")
+        val numberMatch = Regex("""\+?\d[\d\s()\-]{5,}\d""").find(rawCommand)
+        val number = numberMatch?.value?.replace(Regex("[^0-9+]"), "")
 
         if (isCall) {
             if (!number.isNullOrBlank()) {
@@ -39,14 +40,21 @@ internal object DeviceVoiceActions {
 
         if (isMessage) {
             if (!number.isNullOrBlank()) {
-                val body = rawCommand.substringAfter(number, "").trim()
+                val body = numberMatch?.let { rawCommand.substring(it.range.last + 1) }.orEmpty().trim()
                     .replace(Regex("^(?:ga|uchun|deb|xabar|sms|yoz|yubor)\\s*"), "")
                 val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + number))
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 if (body.isNotBlank()) intent.putExtra("sms_body", body)
                 return DeviceVoiceAction("Xabarni tayyorladim. Yuborishdan oldin tekshirib, o‘zingiz tasdiqlang.", "Xabarni ko‘rish", intent)
             }
-            return contactSearchAction(command, "Xabar yuboriladigan kontaktni tanlang.")
+            val body = command
+                .replace(Regex("""\b(xabar|yoz|yozib|yubor|yuborib|sms|напиши|сообщение|отправь|пожалуйста)\b"""), " ")
+                .replace(Regex("""\s+"""), " ")
+                .trim()
+            val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (body.isNotBlank()) intent.putExtra("sms_body", body)
+            return DeviceVoiceAction("Xabar matnini tayyorladim. Qabul qiluvchini tanlab, yuborishni o‘zingiz tasdiqlang.", "Xabarni yozish", intent)
         }
 
         val isContactSearch = listOf("kontakt", "contact", "контакт").any { command.contains(it) }
@@ -128,8 +136,7 @@ internal object DeviceVoiceActions {
     }
 
     private fun normalize(value: String): String = value.lowercase(Locale.ROOT)
-        .replace('‘', '\'')
-        .replace('’', '\'')
+        .replace(Regex("['ʻʼ’‘´]"), "")
         .replace(Regex("[^\\p{L}\\p{N}+]+"), " ")
         .replace(Regex("\\s+"), " ")
         .trim()
@@ -215,8 +222,7 @@ internal object InstalledAppMatcher {
     }
 
     private fun normalize(value: String): String = value.lowercase(Locale.ROOT)
-        .replace('‘', '\'')
-        .replace('’', '\'')
+        .replace(Regex("['ʻʼ’‘´]"), "")
         .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
         .replace(Regex("\\s+"), " ")
         .trim()
