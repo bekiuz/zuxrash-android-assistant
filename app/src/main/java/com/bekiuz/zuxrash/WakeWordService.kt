@@ -34,8 +34,7 @@ import java.util.UUID
 /**
  * User-enabled, foreground microphone service for the "Hey Zuxrash" wake phrase.
  * It deliberately shows an ongoing notification with an explicit Stop action.
- * Android's speech recognition provider performs speech recognition; this is not
- * an offline hotword engine and may require the device's speech service/internet.
+ * Uzbek speech is recognized locally by Vosk after its model has been downloaded once.
  */
 class WakeWordService : Service() {
     companion object {
