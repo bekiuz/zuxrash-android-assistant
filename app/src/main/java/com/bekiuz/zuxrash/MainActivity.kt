@@ -381,6 +381,10 @@ private fun ZuxrashAssistantApp() {
         var capture: NoiseFilteredAudioCapture? = null
         if (!filteredAudioDisabled) {
             capture = NoiseFilteredAudioCapture.create()
+            if (capture == null) {
+                filteredAudioDisabled = true
+                statusMessage = "Telefon maxsus audio filtrini bermadi · odatiy mikrofon rejimi"
+            }
             if (capture != null) {
                 try {
                     capture.start()
