@@ -208,7 +208,7 @@ private fun ZuxrashAssistantApp() {
     fun sendText(rawText: String) {
         val text = rawText.trim()
         if (text.isBlank() || isLoading) return
-        inAppVoskEngineRef.get()?.stop()
+        inAppVoskEngineRef.getAndSet(null)?.close()
         pauseWakeWordIfEnabled()
         messages.add(ChatMessage(role = "user", text = text))
         input = ""
@@ -272,7 +272,7 @@ private fun ZuxrashAssistantApp() {
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         if (isListening && text.isNotBlank()) {
                             isListening = false
-                            inAppVoskEngineRef.get()?.stop()
+                            inAppVoskEngineRef.getAndSet(null)?.close()
                             statusMessage = "Ovoz tanildi"
                             sendText(text)
                         }
@@ -283,7 +283,7 @@ private fun ZuxrashAssistantApp() {
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         if (isListening) {
                             isListening = false
-                            inAppVoskEngineRef.get()?.stop()
+                            inAppVoskEngineRef.getAndSet(null)?.close()
                             statusMessage = "Oflayn ovoz xatosi: " + message.take(100)
                             resumeWakeWordIfEnabled()
                         }
@@ -294,7 +294,7 @@ private fun ZuxrashAssistantApp() {
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         if (isListening) {
                             isListening = false
-                            inAppVoskEngineRef.get()?.stop()
+                            inAppVoskEngineRef.getAndSet(null)?.close()
                             statusMessage = "Ovoz eshitilmadi, qayta urinib ko‘r"
                             resumeWakeWordIfEnabled()
                         }
@@ -317,7 +317,7 @@ private fun ZuxrashAssistantApp() {
                 statusMessage = "Oflayn mikrofon tinglayapti…"
             } catch (error: Exception) {
                 isListening = false
-                engine.stop()
+                inAppVoskEngineRef.getAndSet(null)?.close()
                 statusMessage = "Ovoz tizimi ishga tushmadi: " +
                     error.message.orEmpty().take(110)
                 Toast.makeText(context, statusMessage, Toast.LENGTH_LONG).show()
@@ -472,7 +472,7 @@ private fun ZuxrashAssistantApp() {
                 IconButton(
                     onClick = {
                         if (isListening) {
-                            inAppVoskEngineRef.get()?.stop()
+                            inAppVoskEngineRef.getAndSet(null)?.close()
                             isListening = false
                             statusMessage = "Ovoz tinglash to‘xtatildi"
                             resumeWakeWordIfEnabled()
