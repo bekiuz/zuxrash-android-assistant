@@ -288,6 +288,7 @@ class WakeWordService : Service() {
 
     private fun handleTranscript(transcript: String) {
         val normalized = transcript.lowercase(Locale.ROOT)
+            .replace(Regex("['ʻʼ’‘´]"), "")
             .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
             .trim()
         val wakePattern = Regex("\\b(?:hey\\s+)?zux\\s*rash(?:\\s+ai)?\\b")
@@ -440,7 +441,7 @@ class WakeWordService : Service() {
                         LocalAction("Qidiruvni ochish uchun bildirishnomadagi tugmani bosing.", "Qidirish", searchIntent)
                     }
                 }
-                else -> DeviceVoiceActions.resolve(this, lower)?.let { action ->
+                else -> DeviceVoiceActions.resolve(this, command)?.let { action ->
                     LocalAction(action.message, action.actionLabel, action.intent)
                 } ?: findInstalledAppAction(lower)
             }
