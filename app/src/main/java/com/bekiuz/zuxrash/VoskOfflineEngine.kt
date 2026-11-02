@@ -157,8 +157,11 @@ internal class VoskOfflineEngine(
                     while (true) {
                         val count = input.read(buffer)
                         if (count < 0) break
-                        output.write(buffer, 0, count)
                         downloadedBytes += count
+                        if (downloadedBytes > MAX_ARCHIVE_BYTES) {
+                            throw IOException("Ovoz modeli arxivining hajmi juda katta.")
+                        }
+                        output.write(buffer, 0, count)
                         if (expectedBytes > 0L) {
                             onProgress(((downloadedBytes * 100L) / expectedBytes).toInt().coerceIn(0, 100))
                         }
@@ -253,6 +256,7 @@ internal class VoskOfflineEngine(
         const val SAMPLE_RATE = 16_000
         const val MODEL_DIRECTORY = "vosk-model-small-uz-0.22"
         const val MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-uz-0.22.zip"
+        const val MAX_ARCHIVE_BYTES = 120L * 1024L * 1024L
         const val MAX_EXTRACTED_BYTES = 180L * 1024L * 1024L
     }
 }
