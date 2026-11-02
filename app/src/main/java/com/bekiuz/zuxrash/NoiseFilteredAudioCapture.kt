@@ -51,19 +51,20 @@ internal class NoiseFilteredAudioCapture private constructor(
                 )
                 if (minSize <= 0) return null
 
-                recorder = AudioRecord(
+                val activeRecorder = AudioRecord(
                     MediaRecorder.AudioSource.VOICE_RECOGNITION,
                     SAMPLE_RATE,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
                     max(minSize * 2, FRAME_BYTES * 4)
                 )
-                if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-                    recorder.release()
+                recorder = activeRecorder
+                if (activeRecorder.state != AudioRecord.STATE_INITIALIZED) {
+                    activeRecorder.release()
                     return null
                 }
 
-                val sessionId = recorder.audioSessionId
+                val sessionId = activeRecorder.audioSessionId
                 if (NoiseSuppressor.isAvailable()) {
                     ns = NoiseSuppressor.create(sessionId)?.apply { enabled = true }
                 }
@@ -75,13 +76,15 @@ internal class NoiseFilteredAudioCapture private constructor(
                 }
 
                 val pipe = ParcelFileDescriptor.createPipe()
-                readSide = pipe[0]
-                writeSide = pipe[1]
+                val activeReadSide = pipe[0]
+                val activeWriteSide = pipe[1]
+                readSide = activeReadSide
+                writeSide = activeWriteSide
 
                 NoiseFilteredAudioCapture(
-                    readSide,
-                    writeSide,
-                    recorder,
+                    activeReadSide,
+                    activeWriteSide,
+                    activeRecorder,
                     ns,
                     aec,
                     agc
