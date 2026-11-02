@@ -11,19 +11,13 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
-import android.os.ParcelFileDescriptor
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
-import android.speech.RecognitionListener
-import android.speech.RecognitionSupportCallback
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import kotlinx.coroutines.CoroutineScope
@@ -31,7 +25,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import java.io.IOException
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -59,7 +52,8 @@ class WakeWordService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var prefs: android.content.SharedPreferences
-    private var recognizer: SpeechRecognizer? = null
+    private var offlineEngine: VoskOfflineEngine? = null
+    private var modelLoading = false
     private var tts: TextToSpeech? = null
     private var serviceActive = false
     private var paused = false
@@ -67,12 +61,8 @@ class WakeWordService : Service() {
     private var speaking = false
     private var ttsReady = false
     private var awaitingCommandUntil = 0L
-    private var speechLanguage = "uz-UZ"
-    private var dualLanguageSupported = false
-    private var languageSupportChecked = false
-    private var languageFallbackUsed = false
-    private var filteredCapture: NoiseFilteredAudioCapture? = null
-    private var filteredAudioDisabled = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+    private var lastPartialText = ""
+    private var lastPartialNotifyAt = 0L
 
     private val listenRunnable = Runnable { startRecognition() }
 
@@ -80,12 +70,6 @@ class WakeWordService : Service() {
         super.onCreate()
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         createNotificationChannel()
-
-        if (SpeechRecognizer.isRecognitionAvailable(this)) {
-            recognizer = SpeechRecognizer.createSpeechRecognizer(this).also {
-                it.setRecognitionListener(recognitionListener)
-            }
-        }
 
         tts = TextToSpeech(this) { status ->
             handler.post {
@@ -127,8 +111,9 @@ class WakeWordService : Service() {
             paused = false
             prefs.edit().putBoolean("wake_word_enabled", false).apply()
             handler.removeCallbacks(listenRunnable)
-            stopFilteredCapture()
-            try { recognizer?.cancel() } catch (_: Exception) { }
+            stopOfflineRecognition()
+            offlineEngine?.close()
+            offlineEngine = null
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -165,9 +150,7 @@ class WakeWordService : Service() {
             ACTION_PAUSE -> {
                 paused = true
                 handler.removeCallbacks(listenRunnable)
-                stopFilteredCapture()
-                try { recognizer?.cancel() } catch (_: Exception) { }
-                recognizing = false
+                stopOfflineRecognition()
                 updateNotification("Ilova ishlayapti · fon tinglash vaqtincha to‘xtadi")
             }
             ACTION_RESUME -> {
@@ -178,14 +161,8 @@ class WakeWordService : Service() {
             else -> {
                 paused = false
                 prefs.edit().putBoolean("wake_word_enabled", true).apply()
-                if (recognizer == null) {
-                    speakAndListen("Bu telefonda nutqni tanish xizmati topilmadi.")
-                    updateNotification("Nutqni tanish xizmati topilmadi")
-                } else {
-                    updateNotification("Mikrofon xizmatini tekshiryapman…")
-                    checkRecognitionSupport()
-                    scheduleRecognition(700)
-                }
+                updateNotification("O‘zbekcha oflayn ovoz modelini tayyorlayapman…")
+                if (offlineEngine == null) prepareOfflineEngine() else scheduleRecognition(400)
             }
         }
         return START_STICKY
@@ -196,9 +173,9 @@ class WakeWordService : Service() {
     override fun onDestroy() {
         serviceActive = false
         handler.removeCallbacksAndMessages(null)
-        stopFilteredCapture()
-        try { recognizer?.cancel(); recognizer?.destroy() } catch (_: Exception) { }
-        recognizer = null
+        stopOfflineRecognition()
+        try { offlineEngine?.close() } catch (_: Exception) { }
+        offlineEngine = null
         try { tts?.stop(); tts?.shutdown() } catch (_: Exception) { }
         tts = null
         scope.cancel()
@@ -207,311 +184,119 @@ class WakeWordService : Service() {
         super.onDestroy()
     }
 
-    private val recognitionListener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {
-            recognizing = true
-            if (!paused) updateNotification("Mikrofon faol · “Hey Zuxrash” deb ayting")
+    private fun prepareOfflineEngine() {
+        if (!serviceActive || paused || modelLoading) return
+        if (offlineEngine != null) {
+            scheduleRecognition(400)
+            return
         }
 
-        override fun onBeginningOfSpeech() {
-            recognizing = true
-            updateNotification("Ovoz eshitildi · gapiring")
-        }
+        modelLoading = true
+        updateNotification("O‘zbekcha ovoz modeli birinchi marta yuklanmoqda…")
 
-        override fun onRmsChanged(rmsdB: Float) { }
-        override fun onBufferReceived(buffer: ByteArray?) { }
-
-        override fun onEndOfSpeech() {
-            recognizing = false
-            updateNotification("Ovoz qayta ishlanyapti…")
-        }
-
-        override fun onError(error: Int) {
-            recognizing = false
-            if (!serviceActive || paused) {
-                stopFilteredCapture()
-                return
-            }
-
-            val usedFilteredInput = filteredCapture != null
-            stopFilteredCapture()
-            if (
-                usedFilteredInput &&
-                !filteredAudioDisabled &&
-                (error == SpeechRecognizer.ERROR_AUDIO ||
-                    error == SpeechRecognizer.ERROR_CLIENT ||
-                    error == SpeechRecognizer.ERROR_SERVER)
-            ) {
-                filteredAudioDisabled = true
-                recreateRecognizer()
-                updateNotification("Telefonning nutq xizmati filtrlangan audio qabul qilmadi · oddiy mikrofon rejimiga o‘tdim")
-                scheduleRecognition(1200)
-                return
-            }
-
-            if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
-                prefs.edit().putBoolean("wake_word_enabled", false).apply()
-                updateNotification("Mikrofon ruxsati yo‘q. Zuxrash sozlamalaridan ruxsat bering.")
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-                return
-            }
-
-            if (
-                (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED ||
-                    error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE) &&
-                !languageFallbackUsed
-            ) {
-                languageFallbackUsed = true
-                dualLanguageSupported = false
-                speechLanguage = if (speechLanguage == "uz-UZ") "ru-RU" else "uz-UZ"
-                updateNotification("Til modeli topilmadi. " + speechLanguage + " tiliga o‘tdim.")
-                recreateRecognizer()
-                scheduleRecognition(1200)
-                return
-            }
-
-            val detail = when (error) {
-                SpeechRecognizer.ERROR_AUDIO -> "Mikrofondan audio olinmadi"
-                SpeechRecognizer.ERROR_NETWORK -> "Nutq xizmati internetga ulana olmadi"
-                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Nutq xizmati vaqti tugadi"
-                SpeechRecognizer.ERROR_NO_MATCH -> "Ovoz tanilmadi · qayta tinglayapman"
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Ovoz eshitilmadi · qayta tinglayapman"
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Nutq xizmati band · qayta urinaman"
-                SpeechRecognizer.ERROR_SERVER -> "Nutq serverida xatolik"
-                SpeechRecognizer.ERROR_CLIENT -> "Nutq xizmati qayta ishga tushirilmoqda"
-                SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "Nutq serveri uzildi · qayta ulanaman"
-                SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "So‘rov ko‘paydi · biroz kutaman"
-                SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "O‘zbek va rus tili modeli bu xizmatda yo‘q"
-                SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Til modeli yuklanmagan yoki hozir mavjud emas"
-                else -> "Nutqni tanish xatosi ($error) · qayta urinayapman"
-            }
-            updateNotification(detail)
-
-            val delay = when (error) {
-                SpeechRecognizer.ERROR_NETWORK,
-                SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
-                SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> 3500L
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 1800L
-                SpeechRecognizer.ERROR_CLIENT,
-                SpeechRecognizer.ERROR_SERVER_DISCONNECTED,
-                SpeechRecognizer.ERROR_SERVER -> {
-                    recreateRecognizer()
-                    1400L
+        val engine = VoskOfflineEngine(this, object : VoskOfflineEngine.Callbacks {
+            override fun onPartialResult(text: String) {
+                handler.post {
+                    val now = System.currentTimeMillis()
+                    if (serviceActive && !paused && !speaking &&
+                        text != lastPartialText && now - lastPartialNotifyAt >= 650L
+                    ) {
+                        lastPartialText = text
+                        lastPartialNotifyAt = now
+                        updateNotification("Eshitilyapti: " + text.take(90))
+                    }
                 }
-                else -> 900L
             }
-            scheduleRecognition(delay)
+
+            override fun onResult(text: String) {
+                handler.post {
+                    if (serviceActive && !paused && !speaking && text.isNotBlank()) {
+                        lastPartialText = ""
+                        updateNotification("Eshitdim: " + text.take(90))
+                        handleTranscript(text)
+                    }
+                }
+            }
+
+            override fun onError(message: String) {
+                handler.post {
+                    if (serviceActive && !paused && !speaking) {
+                        stopOfflineRecognition()
+                        updateNotification("Oflayn nutq xatosi: " + message.take(100))
+                        scheduleRecognition(1600)
+                    }
+                }
+            }
+
+            override fun onTimeout() {
+                handler.post {
+                    if (serviceActive && !paused && !speaking) {
+                        stopOfflineRecognition()
+                        updateNotification("Yana tinglayapman…")
+                        scheduleRecognition(400)
+                    }
+                }
+            }
+        })
+
+        scope.launch {
+            try {
+                engine.prepare { progress ->
+                    handler.post {
+                        if (serviceActive && modelLoading) {
+                            updateNotification("O‘zbekcha ovoz modeli yuklanmoqda: $progress%")
+                        }
+                    }
+                }
+                handler.post {
+                    modelLoading = false
+                    if (!serviceActive) {
+                        engine.close()
+                        return@post
+                    }
+                    offlineEngine?.close()
+                    offlineEngine = engine
+                    updateNotification("Vosk o‘zbekcha oflayn tizimi tayyor · “Hey Zuxrash” deb ayting")
+                    if (!paused) startRecognition()
+                }
+            } catch (error: Exception) {
+                try { engine.close() } catch (_: Exception) { }
+                handler.post {
+                    modelLoading = false
+                    if (serviceActive) {
+                        val detail = error.message.orEmpty().take(100)
+                        updateNotification(
+                            "Ovoz modeli yuklanmadi. Birinchi yuklash uchun internetni yoqing va Zuxrashni qayta ishga tushiring. " + detail
+                        )
+                    }
+                }
+            }
         }
-
-        override fun onResults(results: Bundle?) {
-            recognizing = false
-            stopFilteredCapture()
-            if (!serviceActive || paused) return
-            val transcripts = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.filter { it.isNotBlank() }.orEmpty()
-            val scores = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
-            if (transcripts.isEmpty()) {
-                updateNotification("Ovoz aniqlanmadi · yana tinglayapman")
-                scheduleRecognition(500)
-                return
-            }
-
-            val wakeIndex = transcripts.indexOfFirst { containsWakePhrase(it) }
-            val bestIndex = if (wakeIndex >= 0) wakeIndex else {
-                transcripts.indices.maxByOrNull { index ->
-                    scores?.getOrNull(index)?.takeIf { it >= 0f } ?: 0.5f
-                } ?: 0
-            }
-            val transcript = transcripts[bestIndex]
-            val confidence = scores?.getOrNull(bestIndex) ?: -1f
-
-            if (confidence in 0f..0.12f) {
-                updateNotification("Shovqin ko‘p yoki ovoz noaniq · telefonga yaqinroq gapiring")
-                scheduleRecognition(700)
-                return
-            }
-
-            updateNotification("Eshitdim: " + transcript.take(90))
-            handleTranscript(transcript)
-        }
-
-        override fun onPartialResults(partialResults: Bundle?) {
-            val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull().orEmpty()
-            if (partial.isNotBlank()) updateNotification("Eshitilyapti: " + partial.take(90))
-        }
-
-        override fun onLanguageDetection(results: Bundle) {
-            val language = results?.getString(SpeechRecognizer.DETECTED_LANGUAGE).orEmpty()
-            when {
-                language.startsWith("ru", ignoreCase = true) -> speechLanguage = "ru-RU"
-                language.startsWith("uz", ignoreCase = true) -> speechLanguage = "uz-UZ"
-            }
-        }
-        override fun onEvent(eventType: Int, params: Bundle?) { }
     }
 
     private fun startRecognition() {
-        if (!serviceActive || paused || speaking || recognizing) return
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            prefs.edit().putBoolean("wake_word_enabled", false).apply()
-            stopSelf()
+        if (!serviceActive || paused || speaking) return
+        val engine = offlineEngine
+        if (engine == null) {
+            prepareOfflineEngine()
             return
-        }
-        val engine = recognizer ?: run {
-            updateNotification("Nutqni tanish xizmati mavjud emas")
-            return
-        }
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, speechLanguage)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, speechLanguage)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
-            if (Build.VERSION.SDK_INT >= 33) {
-                putExtra(RecognizerIntent.EXTRA_ENABLE_BIASING_DEVICE_CONTEXT, true)
-                putStringArrayListExtra(
-                    RecognizerIntent.EXTRA_BIASING_STRINGS,
-                    arrayListOf(
-                        "Zuxrash", "Hey Zuxrash", "YouTube", "Telegram", "Instagram",
-                        "Chrome", "Play Market", "och", "ochib ber", "ilovasini och",
-                        "открой", "запусти", "открыть приложение"
-                    )
-                )
-            }
-            if (Build.VERSION.SDK_INT >= 34) {
-                putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION, true)
-                putStringArrayListExtra(
-                    RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES,
-                    arrayListOf("uz-UZ", "ru-RU")
-                )
-                if (dualLanguageSupported) {
-                    putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH, RecognizerIntent.LANGUAGE_SWITCH_BALANCED)
-                    putStringArrayListExtra(
-                        RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES,
-                        arrayListOf("uz-UZ", "ru-RU")
-                    )
-                }
-            }
         }
 
-        var capture = if (!filteredAudioDisabled) NoiseFilteredAudioCapture.create() else null
-        if (capture == null && !filteredAudioDisabled) {
-            filteredAudioDisabled = true
-            updateNotification("Telefon maxsus audio filtrini bermadi · odatiy mikrofon rejimi")
-        }
-        if (capture != null) {
-            try {
-                capture.start()
-                filteredCapture = capture
-                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, capture.readDescriptor)
-                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, NoiseFilteredAudioCapture.CHANNEL_COUNT)
-                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, android.media.AudioFormat.ENCODING_PCM_16BIT)
-                intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, NoiseFilteredAudioCapture.SAMPLE_RATE)
-                updateNotification("Mikrofon filtri faol · " + capture.filterStatus)
-            } catch (_: Exception) {
-                capture.stop()
-                capture = null
-                filteredCapture = null
-                updateNotification("Ovoz filtri ishga tushmadi · odatiy mikrofon rejimi")
-            }
-        }
         try {
+            engine.start()
             recognizing = true
-            engine.startListening(intent)
-        } catch (_: Exception) {
-            recognizing = false
-            stopFilteredCapture()
-            scheduleRecognition(1500)
-        }
-    }
-
-    private fun containsWakePhrase(value: String): Boolean {
-        val normalized = value.lowercase(Locale.ROOT)
-            .replace(Regex("['ʻʼ’‘´]"), "")
-            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
-            .trim()
-        return Regex("(?:hey\\s+)?(?:zux\\s*rash|zu[hx]\\s*rash|зухраш|зукраш)(?:\\s+ai)?")
-            .containsMatchIn(normalized)
-    }
-
-    private fun stopFilteredCapture() {
-        val capture = filteredCapture
-        filteredCapture = null
-        try { capture?.stop() } catch (_: Exception) { }
-    }
-
-    private fun checkRecognitionSupport() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || languageSupportChecked) return
-        val engine = recognizer ?: return
-        languageSupportChecked = true
-        val request = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        }
-        try {
-            engine.checkRecognitionSupport(
-                request,
-                mainExecutor,
-                object : RecognitionSupportCallback {
-                    override fun onSupportResult(support: android.speech.RecognitionSupport) {
-                        val available = (
-                            support.onlineLanguages +
-                                support.installedOnDeviceLanguages
-                            ).map { it.lowercase(Locale.ROOT) }.toSet()
-                        val hasUzbek = available.any { it == "uz-uz" || it.startsWith("uz-") }
-                        val hasRussian = available.any { it == "ru-ru" || it.startsWith("ru-") }
-                        dualLanguageSupported = Build.VERSION.SDK_INT >= 34 && hasUzbek && hasRussian
-
-                        speechLanguage = when {
-                            hasUzbek -> "uz-UZ"
-                            hasRussian -> "ru-RU"
-                            else -> "uz-UZ"
-                        }
-
-                        val state = when {
-                            dualLanguageSupported -> "O‘zbekcha va ruscha nutq tayyor"
-                            hasUzbek -> "O‘zbekcha nutq tayyor"
-                            hasRussian -> "Ruscha nutq tayyor"
-                            else -> "Til qo‘llab-quvvatlashi aniqlanmadi · Google nutq xizmatini tekshiring"
-                        }
-                        updateNotification(state)
-                    }
-
-                    override fun onError(error: Int) {
-                        speechLanguage = "uz-UZ"
-                        dualLanguageSupported = false
-                        updateNotification("Tilni tekshirib bo‘lmadi ($error) · o‘zbekcha tinglashga urinaman")
-                    }
-                }
-            )
+            updateNotification("Oflayn mikrofon faol · “Hey Zuxrash” deb ayting")
         } catch (error: Exception) {
-            speechLanguage = "uz-UZ"
-            dualLanguageSupported = false
-            updateNotification("Nutq tilini tekshirib bo‘lmadi · o‘zbekcha tinglashga urinaman")
+            recognizing = false
+            updateNotification("Oflayn mikrofon ishga tushmadi: " + error.message.orEmpty().take(100))
+            scheduleRecognition(1800)
         }
     }
 
-    private fun recreateRecognizer() {
-        try {
-            recognizer?.cancel()
-            recognizer?.destroy()
-        } catch (_: Exception) { }
-        recognizer = try {
-            if (SpeechRecognizer.isRecognitionAvailable(this)) {
-                SpeechRecognizer.createSpeechRecognizer(this).also {
-                    it.setRecognitionListener(recognitionListener)
-                }
-            } else {
-                null
-            }
-        } catch (_: Exception) {
-            null
-        }
-        if (recognizer == null) {
-            updateNotification("Telefonning nutqni tanish xizmati topilmadi")
-        }
+    private fun stopOfflineRecognition() {
+        recognizing = false
+        lastPartialText = ""
+        try { offlineEngine?.stop() } catch (_: Exception) { }
     }
 
     private fun scheduleRecognition(delayMs: Long) {
@@ -566,6 +351,7 @@ class WakeWordService : Service() {
     )
 
     private fun executeVoiceCommand(command: String) {
+        stopOfflineRecognition()
         val cleanCommand = command.trim()
             .replace(Regex("^(?:menga|manga|iltimos)\\s+"), "")
             .trim()
@@ -738,6 +524,7 @@ class WakeWordService : Service() {
             scheduleRecognition(500)
             return
         }
+        stopOfflineRecognition()
         val engine = tts
         if (!ttsReady || engine == null) {
             scheduleRecognition(1400)
