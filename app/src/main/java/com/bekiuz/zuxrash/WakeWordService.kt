@@ -20,6 +20,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
 import android.speech.RecognitionListener
+import android.speech.RecognitionSupportCallback
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
@@ -65,6 +66,10 @@ class WakeWordService : Service() {
     private var speaking = false
     private var ttsReady = false
     private var awaitingCommandUntil = 0L
+    private var speechLanguage = "uz-UZ"
+    private var dualLanguageSupported = false
+    private var languageSupportChecked = false
+    private var languageFallbackUsed = false
 
     private val listenRunnable = Runnable { startRecognition() }
 
@@ -172,7 +177,8 @@ class WakeWordService : Service() {
                     speakAndListen("Bu telefonda nutqni tanish xizmati topilmadi.")
                     updateNotification("Nutqni tanish xizmati topilmadi")
                 } else {
-                    updateNotification("Fon tinglash faol · “Hey Zuxrash” deb ayting")
+                    updateNotification("Mikrofon xizmatini tekshiryapman…")
+                    checkRecognitionSupport()
                     scheduleRecognition(700)
                 }
             }
@@ -190,7 +196,8 @@ class WakeWordService : Service() {
         try { tts?.stop(); tts?.shutdown() } catch (_: Exception) { }
         tts = null
         scope.cancel()
-        if (::prefs.isInitialized) prefs.edit().putBoolean("wake_word_enabled", false).apply()
+        // Keep the user's enabled preference when Android reclaims this process.
+        // START_STICKY can then recreate the foreground service with a null Intent.
         super.onDestroy()
     }
 
@@ -215,16 +222,58 @@ class WakeWordService : Service() {
         override fun onError(error: Int) {
             recognizing = false
             if (!serviceActive || paused) return
+
             if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
                 prefs.edit().putBoolean("wake_word_enabled", false).apply()
+                updateNotification("Mikrofon ruxsati yo‘q. Zuxrash sozlamalaridan ruxsat bering.")
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return
             }
+
+            if (
+                (error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED ||
+                    error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE) &&
+                !languageFallbackUsed
+            ) {
+                languageFallbackUsed = true
+                dualLanguageSupported = false
+                speechLanguage = if (speechLanguage == "uz-UZ") "ru-RU" else "uz-UZ"
+                updateNotification("Til modeli topilmadi. " + speechLanguage + " tiliga o‘tdim.")
+                recreateRecognizer()
+                scheduleRecognition(1200)
+                return
+            }
+
+            val detail = when (error) {
+                SpeechRecognizer.ERROR_AUDIO -> "Mikrofondan audio olinmadi"
+                SpeechRecognizer.ERROR_NETWORK -> "Nutq xizmati internetga ulana olmadi"
+                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Nutq xizmati vaqti tugadi"
+                SpeechRecognizer.ERROR_NO_MATCH -> "Ovoz tanilmadi · qayta tinglayapman"
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Ovoz eshitilmadi · qayta tinglayapman"
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Nutq xizmati band · qayta urinaman"
+                SpeechRecognizer.ERROR_SERVER -> "Nutq serverida xatolik"
+                SpeechRecognizer.ERROR_CLIENT -> "Nutq xizmati qayta ishga tushirilmoqda"
+                SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "Nutq serveri uzildi · qayta ulanaman"
+                SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "So‘rov ko‘paydi · biroz kutaman"
+                SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "O‘zbek va rus tili modeli bu xizmatda yo‘q"
+                SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "Til modeli yuklanmagan yoki hozir mavjud emas"
+                else -> "Nutqni tanish xatosi ($error) · qayta urinayapman"
+            }
+            updateNotification(detail)
+
             val delay = when (error) {
                 SpeechRecognizer.ERROR_NETWORK,
-                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> 1800L
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 1400L
-                else -> 700L
+                SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
+                SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> 3500L
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> 1800L
+                SpeechRecognizer.ERROR_CLIENT,
+                SpeechRecognizer.ERROR_SERVER_DISCONNECTED,
+                SpeechRecognizer.ERROR_SERVER -> {
+                    recreateRecognizer()
+                    1400L
+                }
+                else -> 900L
             }
             scheduleRecognition(delay)
         }
@@ -235,9 +284,11 @@ class WakeWordService : Service() {
             val transcript = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.firstOrNull().orEmpty()
             if (transcript.isBlank()) {
+                updateNotification("Ovoz aniqlanmadi · yana tinglayapman")
                 scheduleRecognition(500)
                 return
             }
+            updateNotification("Ovoz eshitildi · buyruqni tekshiryapman")
             handleTranscript(transcript)
         }
 
@@ -258,10 +309,9 @@ class WakeWordService : Service() {
         }
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            val deviceLanguage = if (Locale.getDefault().language == "ru") "ru-RU" else "uz-UZ"
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, deviceLanguage)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, deviceLanguage)
-            if (Build.VERSION.SDK_INT >= 34) {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, speechLanguage)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, speechLanguage)
+            if (Build.VERSION.SDK_INT >= 34 && dualLanguageSupported) {
                 putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH, RecognizerIntent.LANGUAGE_SWITCH_BALANCED)
                 putStringArrayListExtra(
                     RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES,
@@ -277,6 +327,77 @@ class WakeWordService : Service() {
         } catch (_: Exception) {
             recognizing = false
             scheduleRecognition(1500)
+        }
+    }
+
+    private fun checkRecognitionSupport() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || languageSupportChecked) return
+        val engine = recognizer ?: return
+        languageSupportChecked = true
+        val request = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        }
+        try {
+            engine.checkRecognitionSupport(
+                request,
+                mainExecutor,
+                object : RecognitionSupportCallback {
+                    override fun onSupportResult(support: android.speech.RecognitionSupport) {
+                        val available = (
+                            support.onlineLanguages +
+                                support.installedOnDeviceLanguages
+                            ).map { it.lowercase(Locale.ROOT) }.toSet()
+                        val hasUzbek = available.any { it == "uz-uz" || it.startsWith("uz-") }
+                        val hasRussian = available.any { it == "ru-ru" || it.startsWith("ru-") }
+                        dualLanguageSupported = Build.VERSION.SDK_INT >= 34 && hasUzbek && hasRussian
+
+                        speechLanguage = when {
+                            hasUzbek -> "uz-UZ"
+                            hasRussian -> "ru-RU"
+                            else -> "uz-UZ"
+                        }
+
+                        val state = when {
+                            dualLanguageSupported -> "O‘zbekcha va ruscha nutq tayyor"
+                            hasUzbek -> "O‘zbekcha nutq tayyor"
+                            hasRussian -> "Ruscha nutq tayyor"
+                            else -> "Til qo‘llab-quvvatlashi aniqlanmadi · Google nutq xizmatini tekshiring"
+                        }
+                        updateNotification(state)
+                    }
+
+                    override fun onError(error: Int) {
+                        speechLanguage = "uz-UZ"
+                        dualLanguageSupported = false
+                        updateNotification("Tilni tekshirib bo‘lmadi ($error) · o‘zbekcha tinglashga urinaman")
+                    }
+                }
+            )
+        } catch (error: Exception) {
+            speechLanguage = "uz-UZ"
+            dualLanguageSupported = false
+            updateNotification("Nutq tilini tekshirib bo‘lmadi · o‘zbekcha tinglashga urinaman")
+        }
+    }
+
+    private fun recreateRecognizer() {
+        try {
+            recognizer?.cancel()
+            recognizer?.destroy()
+        } catch (_: Exception) { }
+        recognizer = try {
+            if (SpeechRecognizer.isRecognitionAvailable(this)) {
+                SpeechRecognizer.createSpeechRecognizer(this).also {
+                    it.setRecognitionListener(recognitionListener)
+                }
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+        if (recognizer == null) {
+            updateNotification("Telefonning nutqni tanish xizmati topilmadi")
         }
     }
 
