@@ -41,5 +41,6 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
+    implementation("com.alphacephei:vosk-android:0.3.75")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
