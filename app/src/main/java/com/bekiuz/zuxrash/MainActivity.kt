@@ -858,11 +858,28 @@ private fun runLocalCommand(context: Context, text: String): String? {
                 "Brauzerda qidiruvni ochdim: $search"
             }
 
-            else -> null
+            else -> openAppBySpokenName(context, lower)
         }
     } catch (_: Exception) {
         "Buyruqni tanidim, lekin uni ochib bo‘lmadi. Ilova o‘rnatilganini va ruxsatlarni tekshir."
     }
+}
+
+private fun openAppBySpokenName(context: Context, command: String): String? {
+    val wordsToRemove = listOf("hey zuxrash", "zuxrash ai", "zuxrash", "ilovasini ochib ber", "ilovani ochib ber", "ochib ber", "ilovasini och", "ilovani och", "ni och", "oching", "och", "открой приложение", "открой", "запусти", "open", "launch", "start", "menga", "manga", "iltimos")
+    var requested = command.lowercase(Locale.ROOT).replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+    for (word in wordsToRemove.sortedByDescending { it.length }) requested = requested.replace(word, " ").trim()
+    requested = requested.replace(Regex("\\s+"), " ").trim()
+    if (requested.length < 2) return null
+    val pm = context.packageManager
+    val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+    val match = pm.queryIntentActivities(launcher, 0).firstOrNull { info ->
+        val label = info.loadLabel(pm).toString().lowercase(Locale.ROOT).replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+        label == requested || label.startsWith(requested) || requested.startsWith(label)
+    } ?: return null
+    val launch = pm.getLaunchIntentForPackage(match.activityInfo.packageName) ?: return null
+    context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    return "${match.loadLabel(pm)} ilovasini ochdim."
 }
 
 private fun isAppOpenCommand(command: String, aliases: List<String>): Boolean {
