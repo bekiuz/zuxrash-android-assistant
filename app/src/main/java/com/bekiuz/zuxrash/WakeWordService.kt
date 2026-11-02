@@ -395,13 +395,13 @@ class WakeWordService : Service() {
                     val level = manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
                     LocalAction(if (level in 0..100) "Telefon batareyasi $level foiz." else "Batareya darajasini o‘qib bo‘lmadi.")
                 }
-                isAppOpenCommand(lower, listOf("telegram", "tg")) ->
+                isAppOpenCommand(lower, listOf("telegram", "tg", "телеграм")) ->
                     appAction("org.telegram.messenger", "Telegram")
-                isAppOpenCommand(lower, listOf("youtube", "yutub", "youtub")) ->
+                isAppOpenCommand(lower, listOf("youtube", "yutub", "youtub", "ютуб")) ->
                     appAction("com.google.android.youtube", "YouTube")
-                isAppOpenCommand(lower, listOf("instagram", "insta")) ->
+                isAppOpenCommand(lower, listOf("instagram", "insta", "инстаграм", "инста")) ->
                     appAction("com.instagram.android", "Instagram")
-                isAppOpenCommand(lower, listOf("play market", "playstore", "play store")) ->
+                isAppOpenCommand(lower, listOf("play market", "playstore", "play store", "плей маркет")) ->
                     appAction("com.android.vending", "Play Market")
                 isAppOpenCommand(lower, listOf("chrome", "brauzer", "browser")) ->
                     appAction("com.android.chrome", "Chrome")
@@ -567,18 +567,26 @@ class WakeWordService : Service() {
 
 
 private fun isAppOpenCommand(command: String, aliases: List<String>): Boolean {
-    val words = command.split(Regex("\\s+")).filter { it.isNotBlank() }
-    val appMentioned = aliases.any { alias ->
-        if (alias.contains(" ")) {
-            command.contains(alias)
-        } else {
-            words.any { word -> word == alias || word.startsWith(alias) }
-        }
+    val normalized = command.lowercase(Locale.ROOT)
+        .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+        .trim()
+    val words = normalized.split(Regex("\\s+")).filter { it.isNotBlank() }
+
+    // Uzbek and common Russian/English ways of asking to launch an app.
+    val appMentioned = aliases.any { rawAlias ->
+        val alias = rawAlias.lowercase(Locale.ROOT)
+        if (alias.contains(" ")) normalized.contains(alias)
+        else words.any { word -> word == alias || word.startsWith(alias) }
     }
-    val wantsToOpen = words.any { it.startsWith("och") } ||
-        command.contains("ishga tushir") ||
-        command.contains("ishga tushur") ||
-        command.contains("ilovaga kir") ||
-        words.any { it == "kir" || it == "kiring" || it == "kirib" }
+    val wantsToOpen = words.any { word ->
+        word.startsWith("och") || word.startsWith("откр") ||
+            word.startsWith("запус") || word == "open" || word == "start" ||
+            word == "kir" || word == "kiring" || word == "kirib" ||
+            word == "включи"
+    } || normalized.contains("ishga tushir") ||
+        normalized.contains("ishga tushur") ||
+        normalized.contains("ilovaga kir") ||
+        normalized.contains("приложение")
+
     return appMentioned && wantsToOpen
 }
