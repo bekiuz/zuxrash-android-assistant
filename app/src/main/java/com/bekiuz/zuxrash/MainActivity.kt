@@ -9,9 +9,6 @@ import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Build
 import android.provider.Settings
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.widget.Toast
@@ -157,8 +154,7 @@ private fun ZuxrashAssistantApp() {
     var wakeWordEnabled by remember { mutableStateOf(prefs.getBoolean("wake_word_enabled", false)) }
     var statusMessage by remember { mutableStateOf("Yordam berishga tayyorman") }
     var ttsReady by remember { mutableStateOf(false) }
-    var filteredAudioDisabled by remember { mutableStateOf(Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) }
-    val filteredCaptureRef = remember { java.util.concurrent.atomic.AtomicReference<NoiseFilteredAudioCapture?>(null) }
+    val inAppVoskEngineRef = remember { java.util.concurrent.atomic.AtomicReference<VoskOfflineEngine?>(null) }
 
     fun updateWakeWordService(action: String) {
         if (!prefs.getBoolean("wake_word_enabled", false)) return
@@ -205,19 +201,14 @@ private fun ZuxrashAssistantApp() {
         onDispose { tts.stop(); tts.shutdown() }
     }
 
-    val speechRecognizer = remember(context) {
-        if (SpeechRecognizer.isRecognitionAvailable(context)) SpeechRecognizer.createSpeechRecognizer(context) else null
-    }
-    DisposableEffect(speechRecognizer) {
-        onDispose { speechRecognizer?.destroy() }
-    }
     DisposableEffect(Unit) {
-        onDispose { filteredCaptureRef.getAndSet(null)?.stop() }
+        onDispose { inAppVoskEngineRef.getAndSet(null)?.close() }
     }
 
     fun sendText(rawText: String) {
         val text = rawText.trim()
         if (text.isBlank() || isLoading) return
+        inAppVoskEngineRef.get()?.stop()
         pauseWakeWordIfEnabled()
         messages.add(ChatMessage(role = "user", text = text))
         input = ""
@@ -262,156 +253,76 @@ private fun ZuxrashAssistantApp() {
     }
 
     fun startListening() {
-        val recognizer = speechRecognizer
-        if (recognizer == null) {
-            statusMessage = "Bu telefonda nutqni tanish xizmati topilmadi"
-            Toast.makeText(context, statusMessage, Toast.LENGTH_LONG).show()
-            return
-        }
-
         pauseWakeWordIfEnabled()
-        filteredCaptureRef.getAndSet(null)?.stop()
+        isListening = true
+        statusMessage = "O‘zbekcha oflayn ovoz modeli tayyorlanmoqda…"
 
-        recognizer.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {
-                isListening = true
-                statusMessage = "Tinglayapman…"
-            }
-            override fun onBeginningOfSpeech() {
-                isListening = true
-                statusMessage = "Ovozing eshitildi…"
-            }
-            override fun onRmsChanged(rmsdB: Float) { }
-            override fun onBufferReceived(buffer: ByteArray?) { }
-            override fun onEndOfSpeech() {
-                isListening = false
-                statusMessage = "Ovoz qayta ishlanyapti…"
-            }
-            override fun onError(error: Int) {
-                isListening = false
-                val oldCapture = filteredCaptureRef.getAndSet(null)
-                val usedFilteredInput = oldCapture != null
-                oldCapture?.stop()
-                if (
-                    usedFilteredInput &&
-                    !filteredAudioDisabled &&
-                    (error == SpeechRecognizer.ERROR_AUDIO ||
-                        error == SpeechRecognizer.ERROR_CLIENT ||
-                        error == SpeechRecognizer.ERROR_SERVER)
-                ) {
-                    filteredAudioDisabled = true
-                    statusMessage = "Filtrlangan audio bu nutq xizmatida qo‘llanmaydi, oddiy mikrofonga o‘tyapman"
-                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ startListening() }, 700)
-                    return
+        val engine = inAppVoskEngineRef.get() ?: VoskOfflineEngine(
+            context,
+            object : VoskOfflineEngine.Callbacks {
+                override fun onPartialResult(text: String) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (isListening && text.isNotBlank()) {
+                            statusMessage = "Eshitilyapti: " + text.take(65)
+                        }
+                    }
                 }
+
+                override fun onResult(text: String) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (isListening && text.isNotBlank()) {
+                            isListening = false
+                            inAppVoskEngineRef.get()?.stop()
+                            statusMessage = "Ovoz tanildi"
+                            sendText(text)
+                        }
+                    }
+                }
+
+                override fun onError(message: String) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (isListening) {
+                            isListening = false
+                            inAppVoskEngineRef.get()?.stop()
+                            statusMessage = "Oflayn ovoz xatosi: " + message.take(100)
+                            resumeWakeWordIfEnabled()
+                        }
+                    }
+                }
+
+                override fun onTimeout() {
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (isListening) {
+                            isListening = false
+                            inAppVoskEngineRef.get()?.stop()
+                            statusMessage = "Ovoz eshitilmadi, qayta urinib ko‘r"
+                            resumeWakeWordIfEnabled()
+                        }
+                    }
+                }
+            }
+        ).also { inAppVoskEngineRef.set(it) }
+
+        scope.launch {
+            try {
+                engine.prepare { progress ->
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        if (isListening) {
+                            statusMessage = "Ovoz modeli yuklanmoqda: $progress%"
+                        }
+                    }
+                }
+                if (!isListening) return@launch
+                engine.start()
+                statusMessage = "Oflayn mikrofon tinglayapti…"
+            } catch (error: Exception) {
+                isListening = false
+                engine.stop()
+                statusMessage = "Ovoz tizimi ishga tushmadi: " +
+                    error.message.orEmpty().take(110)
+                Toast.makeText(context, statusMessage, Toast.LENGTH_LONG).show()
                 resumeWakeWordIfEnabled()
-                statusMessage = when (error) {
-                    SpeechRecognizer.ERROR_NO_MATCH -> "Ovoz aniq eshitilmadi — telefonga yaqinroq, sekinroq gapir"
-                    SpeechRecognizer.ERROR_NETWORK -> "Nutqni tanish uchun internet kerak"
-                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Mikrofon band, biroz kut"
-                    SpeechRecognizer.ERROR_AUDIO -> "Mikrofon audiosi olinmadi"
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Ovoz eshitilmadi — qayta urin"
-                    else -> "Nutqni tanish xatosi ($error)"
-                }
             }
-            override fun onResults(results: Bundle?) {
-                isListening = false
-                filteredCaptureRef.getAndSet(null)?.stop()
-                val candidates = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.filter { it.isNotBlank() }.orEmpty()
-                val scores = results?.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
-                if (candidates.isEmpty()) {
-                    statusMessage = "Ovoz aniqlanmadi — qayta aytib ko‘r"
-                    resumeWakeWordIfEnabled()
-                    return
-                }
-                val bestIndex = candidates.indices.maxByOrNull { index ->
-                    scores?.getOrNull(index)?.takeIf { it >= 0f } ?: 0.5f
-                } ?: 0
-                val confidence = scores?.getOrNull(bestIndex) ?: -1f
-                if (confidence in 0f..0.12f) {
-                    statusMessage = "Atrof shovqini baland yoki gap noaniq — telefonga yaqinroq gapir"
-                    resumeWakeWordIfEnabled()
-                    return
-                }
-                sendText(candidates[bestIndex])
-            }
-            override fun onPartialResults(partialResults: Bundle?) {
-                val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull().orEmpty()
-                if (partial.isNotBlank()) statusMessage = "Eshitilyapti: " + partial.take(65)
-            }
-            override fun onLanguageDetection(results: Bundle) {
-                val language = results?.getString(SpeechRecognizer.DETECTED_LANGUAGE).orEmpty()
-                if (language.startsWith("ru", true)) statusMessage = "Ruscha nutq aniqlandi"
-                else if (language.startsWith("uz", true)) statusMessage = "O‘zbekcha nutq aniqlandi"
-            }
-            override fun onEvent(eventType: Int, params: Bundle?) { }
-        })
-
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            val deviceLanguage = if (Locale.getDefault().language == "ru") "ru-RU" else "uz-UZ"
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, deviceLanguage)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, deviceLanguage)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
-            if (Build.VERSION.SDK_INT >= 33) {
-                putExtra(RecognizerIntent.EXTRA_ENABLE_BIASING_DEVICE_CONTEXT, true)
-                putStringArrayListExtra(
-                    RecognizerIntent.EXTRA_BIASING_STRINGS,
-                    arrayListOf(
-                        "Zuxrash", "Hey Zuxrash", "YouTube", "Telegram", "Instagram",
-                        "Chrome", "Play Market", "och", "ochib ber", "ilovasini och",
-                        "открой", "запусти", "открыть приложение"
-                    )
-                )
-            }
-            if (Build.VERSION.SDK_INT >= 34) {
-                putExtra(RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION, true)
-                putStringArrayListExtra(
-                    RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES,
-                    arrayListOf("uz-UZ", "ru-RU")
-                )
-            }
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "Zuxrash AI tinglayapti…")
-        }
-
-        var capture: NoiseFilteredAudioCapture? = null
-        if (!filteredAudioDisabled) {
-            capture = NoiseFilteredAudioCapture.create()
-            if (capture == null) {
-                filteredAudioDisabled = true
-                statusMessage = "Telefon maxsus audio filtrini bermadi · odatiy mikrofon rejimi"
-            }
-            if (capture != null) {
-                try {
-                    capture.start()
-                    filteredCaptureRef.set(capture)
-                    intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, capture.readDescriptor)
-                    intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, NoiseFilteredAudioCapture.CHANNEL_COUNT)
-                    intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, android.media.AudioFormat.ENCODING_PCM_16BIT)
-                    intent.putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, NoiseFilteredAudioCapture.SAMPLE_RATE)
-                    statusMessage = "Mikrofon filtri yoqildi: " + capture.filterStatus
-                } catch (_: Exception) {
-                    capture.stop()
-                    capture = null
-                    filteredCaptureRef.set(null)
-                    statusMessage = "Ovoz filtri ishga tushmadi, odatiy mikrofon ishlaydi"
-                }
-            }
-        }
-
-        try {
-            recognizer.startListening(intent)
-            isListening = true
-            if (capture == null) statusMessage = "Tinglayapman…"
-        } catch (_: Exception) {
-            isListening = false
-            filteredCaptureRef.getAndSet(null)?.stop()
-            statusMessage = "Mikrofonni ishga tushirib bo‘lmadi"
-            resumeWakeWordIfEnabled()
         }
     }
 
