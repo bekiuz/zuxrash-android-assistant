@@ -360,6 +360,19 @@ private fun ZuxrashAssistantApp() {
         }
     }
 
+    val requestOverlayPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        if (Settings.canDrawOverlays(context)) {
+            startWakeWordService()
+        } else {
+            wakeWordEnabled = false
+            prefs.edit().putBoolean("wake_word_enabled", false).apply()
+            statusMessage = "Fon rejimi va ilovalarni ovoz bilan ochish uchun ekran ustida ko‘rinish ruxsati kerak"
+            Toast.makeText(context, statusMessage, Toast.LENGTH_LONG).show()
+        }
+    }
+
     val requestWakeWordPermissions = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
@@ -395,8 +408,21 @@ private fun ZuxrashAssistantApp() {
         ) {
             missing += Manifest.permission.POST_NOTIFICATIONS
         }
-        if (missing.isEmpty()) startWakeWordService()
-        else requestWakeWordPermissions.launch(missing.toTypedArray())
+        if (missing.isNotEmpty()) {
+            requestWakeWordPermissions.launch(missing.toTypedArray())
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+            statusMessage = "Zuxrash boshqa ilovalar ustida ishlashi uchun ruxsat so‘rayapti"
+            requestOverlayPermission.launch(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + context.packageName)
+                )
+            )
+            return
+        }
+        startWakeWordService()
     }
 
     LaunchedEffect(messages.size) {
