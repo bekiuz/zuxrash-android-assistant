@@ -866,7 +866,7 @@ private fun runLocalCommand(context: Context, text: String): String? {
                 "Brauzerda qidiruvni ochdim: $search"
             }
 
-            else -> DeviceVoiceActions.resolve(context, lower)?.let { action ->
+            else -> DeviceVoiceActions.resolve(context, text)?.let { action ->
                 action.intent?.let { context.startActivity(it) }
                 action.message
             }
