@@ -525,7 +525,15 @@ class WakeWordService : Service() {
             .replace(Regex("['ʻʼ’‘´]"), "")
             .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
             .trim()
-        val wakePattern = Regex("(?:hey\\s+)?(?:zux\\s*rash|zu[hx]\\s*rash|зухраш|зукраш)(?:\\s+ai)?")
+        // Speech-to-text may spell the custom wake name phonetically.
+        // Accept common Latin and Cyrillic variants while still requiring the wake phrase.
+        val wakePattern = Regex(
+            "(?:(?:hey|хей|эй)\\s+)?" +
+                "(?:zux\\s*rash|zuxrash|zuk\\s*rash|zukrash|zuh\\s*rash|zuhrash|" +
+                "zukh\\s*rash|zukh rash|zux\\s*resh|zukhrosh|" +
+                "зухраш|зух\\s*раш|зук\\s*раш|зукраш|зукрош|зухрош|зухраш)" +
+                "(?:\\s+ai)?"
+        )
         val wakeMatch = wakePattern.find(normalized)
 
         if (wakeMatch != null) {
@@ -547,6 +555,7 @@ class WakeWordService : Service() {
             return
         }
 
+        updateNotification("Uyg‘otuvchi so‘z tanilmadi: “" + normalized.take(80) + "”")
         scheduleRecognition(450)
     }
 
