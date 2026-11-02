@@ -342,7 +342,7 @@ class WakeWordService : Service() {
             if (partial.isNotBlank()) updateNotification("Eshitilyapti: " + partial.take(90))
         }
 
-        override fun onLanguageDetection(results: Bundle?) {
+        override fun onLanguageDetection(results: Bundle) {
             val language = results?.getString(SpeechRecognizer.DETECTED_LANGUAGE).orEmpty()
             when {
                 language.startsWith("ru", ignoreCase = true) -> speechLanguage = "ru-RU"
