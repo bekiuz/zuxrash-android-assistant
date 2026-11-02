@@ -398,6 +398,10 @@ class WakeWordService : Service() {
         }
 
         var capture = if (!filteredAudioDisabled) NoiseFilteredAudioCapture.create() else null
+        if (capture == null && !filteredAudioDisabled) {
+            filteredAudioDisabled = true
+            updateNotification("Telefon maxsus audio filtrini bermadi · odatiy mikrofon rejimi")
+        }
         if (capture != null) {
             try {
                 capture.start()
